@@ -4,7 +4,6 @@
 
 #include "globals.hpp"
 #include <hyprland/src/desktop/DesktopTypes.hpp>
-#include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprland/src/helpers/AnimatedVariable.hpp>
 #include <hyprland/src/helpers/signal/Signal.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -39,14 +38,18 @@ class CScrollOverview : public IOverview {
     virtual void fullRender();
 
   private:
+    struct SRenderedWindow {
+        PHLWINDOWREF window;
+        CBox         box;
+    };
+
     void   rebuildWorkspaceImages();
     void   seedRememberedSelections();
-    void   redrawWorkspace(PHLWORKSPACE w, bool forcelowres = false);
     void   redrawAll(bool forcelowres = false);
     void   onWorkspaceChange();
     void   renderWallpaperLayers(const CBox& workspaceBox, float renderScale, const Time::steady_tp& now);
-    void   renderWorkspaceLive(PHLWORKSPACE workspace, const Time::steady_tp& now);
-    void   renderWindowLive(PHLWINDOW window, float workspaceYOffset, const Time::steady_tp& now);
+    void   renderWorkspaceLive(size_t workspaceIdx, size_t activeIdx, float renderScale, const Time::steady_tp& now, std::vector<SRenderedWindow>& renderedWindows);
+    void   renderWindowLive(PHLWINDOW window, const CBox& windowBox, float renderScale, const Time::steady_tp& now);
     void   moveViewportWorkspace(bool up);
     bool   moveWindowSelection(const std::string& direction);
     void   rememberSelection(PHLWINDOW window);
@@ -67,13 +70,8 @@ class CScrollOverview : public IOverview {
     bool   workspaceSyncPending     = false;
 
     struct SWindowImage {
-        PHLWINDOWREF            pWindow;
-        CFramebuffer            fb;
-        UP<CHyprSignalListener> windowCommit;
-        Vector2D                lastWindowPosition, lastWindowSize;
+        PHLWINDOWREF pWindow;
     };
-
-    void redrawWindowImage(SP<SWindowImage>);
 
     struct SWorkspaceImage {
         PHLWORKSPACE                  pWorkspace;
@@ -81,14 +79,11 @@ class CScrollOverview : public IOverview {
         std::vector<SP<SWindowImage>> windowImages;
     };
 
-    CFramebuffer                     floatingFb;
-
     Vector2D                         lastMousePosLocal = Vector2D{};
 
     PHLWINDOWREF                     closeOnWindow;
 
     std::vector<SP<SWorkspaceImage>> images;
-    SP<SWorkspaceImage>              imageForWorkspace(PHLWORKSPACE w);
     std::unordered_map<WORKSPACEID, PHLWINDOWREF> rememberedSelection;
 
     struct SForcedSurfaceVisibility {
