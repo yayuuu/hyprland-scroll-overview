@@ -6,14 +6,24 @@
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/debug/log/Logger.hpp>
+#include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/managers/animation/AnimationManager.hpp>
 #include <hyprland/src/managers/animation/DesktopAnimationManager.hpp>
 #include <hyprland/src/managers/cursor/CursorShapeOverrideController.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
+#include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #undef private
 #include "OverviewPassElement.hpp"
+
+static uint32_t getOverviewFramebufferFormat(PHLMONITOR monitor) {
+    if (!monitor || !monitor->m_output)
+        return DRM_FORMAT_ARGB8888;
+
+    return monitor->inHDR() ? DRM_FORMAT_ABGR16161616F : monitor->m_output->state->state().drmFormat;
+}
 
 static void damageMonitor(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
     g_pOverview->damage();
@@ -21,6 +31,20 @@ static void damageMonitor(WP<Hyprutils::Animation::CBaseAnimatedVariable> thispt
 
 static void removeOverview(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
     g_pOverview.reset();
+}
+
+static xkb_keysym_t getOverviewKeysym(const IKeyboard::SKeyEvent& event) {
+    const auto PKEYBOARD = g_pSeatManager->m_keyboard.lock();
+
+    if (!PKEYBOARD)
+        return XKB_KEY_NoSymbol;
+
+    xkb_state* const STATE = PKEYBOARD->m_resolveBindsBySym && PKEYBOARD->m_xkbSymState ? PKEYBOARD->m_xkbSymState : PKEYBOARD->m_xkbState;
+
+    if (!STATE)
+        return XKB_KEY_NoSymbol;
+
+    return xkb_state_key_get_one_sym(STATE, event.keycode + 8);
 }
 
 COverview::~COverview() {
@@ -49,7 +73,7 @@ COverview::COverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn
     int      methodStartID = pMonitor->activeWorkspaceID();
     CVarList method{*PMETHOD, 0, 's', true};
     if (method.size() < 2)
-        Debug::log(ERR, "[he] invalid workspace_method");
+        Log::logger->log(Log::ERR, "[he] invalid workspace_method");
     else {
         methodCenter  = method[0] == "center";
         methodStartID = getWorkspaceIDNameFromString(method[1]).id;
@@ -145,7 +169,10 @@ COverview::COverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn
 
     for (size_t i = 0; i < (size_t)(SIDE_LENGTH * SIDE_LENGTH); ++i) {
         COverview::SWorkspaceImage& image = images[i];
-        image.fb.alloc(monbox.w, monbox.h, PMONITOR->m_output->state->state().drmFormat);
+        const auto                  FBFORMAT = getOverviewFramebufferFormat(PMONITOR);
+        if (image.fb.m_size != monbox.size() || image.fb.m_drmFormat != FBFORMAT)
+            image.fb.release();
+        image.fb.alloc(monbox.w, monbox.h, FBFORMAT);
 
         CRegion fakeDamage{0, 0, INT16_MAX, INT16_MAX};
         g_pHyprRenderer->beginRender(PMONITOR, fakeDamage, RENDER_MODE_FULL_FAKE, nullptr, &image.fb);
@@ -214,7 +241,14 @@ COverview::COverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn
 
     lastMousePosLocal = g_pInputManager->getMouseCoordsInternal() - pMonitor->m_position;
 
-    auto onCursorMove = [this](void* self, SCallbackInfo& info, std::any param) {
+    auto onMouseMove = [this](Vector2D, Event::SCallbackInfo&) {
+        if (closing)
+            return;
+
+        lastMousePosLocal = g_pInputManager->getMouseCoordsInternal() - pMonitor->m_position;
+    };
+
+    auto onTouchMove = [this](ITouch::SMotionEvent, Event::SCallbackInfo& info) {
         if (closing)
             return;
 
@@ -222,7 +256,7 @@ COverview::COverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn
         lastMousePosLocal = g_pInputManager->getMouseCoordsInternal() - pMonitor->m_position;
     };
 
-    auto onCursorSelect = [this](void* self, SCallbackInfo& info, std::any param) {
+    auto onCursorSelect = [this](auto, Event::SCallbackInfo& info) {
         if (closing)
             return;
 
@@ -233,11 +267,34 @@ COverview::COverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn
         close();
     };
 
-    mouseMoveHook = g_pHookSystem->hookDynamic("mouseMove", onCursorMove);
-    touchMoveHook = g_pHookSystem->hookDynamic("touchMove", onCursorMove);
+    mouseMoveHook = Event::bus()->m_events.input.mouse.move.listen(onMouseMove);
+    touchMoveHook = Event::bus()->m_events.input.touch.motion.listen(onTouchMove);
 
-    mouseButtonHook = g_pHookSystem->hookDynamic("mouseButton", onCursorSelect);
-    touchDownHook   = g_pHookSystem->hookDynamic("touchDown", onCursorSelect);
+    mouseButtonHook = Event::bus()->m_events.input.mouse.button.listen(onCursorSelect);
+    touchDownHook   = Event::bus()->m_events.input.touch.down.listen(onCursorSelect);
+
+    auto onKeyboardKey = [this](IKeyboard::SKeyEvent event, Event::SCallbackInfo& info) {
+        if (closing || event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
+            return;
+
+        switch (getOverviewKeysym(event)) {
+            case XKB_KEY_Left:
+            case XKB_KEY_KP_Left: moveSelection(-1, 0); break;
+            case XKB_KEY_Right:
+            case XKB_KEY_KP_Right: moveSelection(1, 0); break;
+            case XKB_KEY_Up:
+            case XKB_KEY_KP_Up: moveSelection(0, -1); break;
+            case XKB_KEY_Down:
+            case XKB_KEY_KP_Down: moveSelection(0, 1); break;
+            default: return;
+        }
+
+        info.cancelled = true;
+    };
+
+    keyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyboardKey);
+
+    closeOnID = openedID;
 }
 
 void COverview::selectHoveredWorkspace() {
@@ -274,9 +331,11 @@ void COverview::redrawID(int id, bool forcelowres) {
 
     auto& image = images[id];
 
-    if (image.fb.m_size != monbox.size()) {
+    const auto FBFORMAT = getOverviewFramebufferFormat(pMonitor.lock());
+
+    if (image.fb.m_size != monbox.size() || image.fb.m_drmFormat != FBFORMAT) {
         image.fb.release();
-        image.fb.alloc(monbox.w, monbox.h, pMonitor->m_output->state->state().drmFormat);
+        image.fb.alloc(monbox.w, monbox.h, FBFORMAT);
     }
 
     CRegion fakeDamage{0, 0, INT16_MAX, INT16_MAX};
@@ -325,6 +384,23 @@ void COverview::redrawAll(bool forcelowres) {
     for (size_t i = 0; i < (size_t)(SIDE_LENGTH * SIDE_LENGTH); ++i) {
         redrawID(i, forcelowres);
     }
+}
+
+void COverview::moveSelection(int dx, int dy) {
+    if (images.empty())
+        return;
+
+    const int current = std::clamp(closeOnID == -1 ? openedID : closeOnID, 0, sc<int>(images.size()) - 1);
+
+    const int nextX = std::clamp(current % SIDE_LENGTH + dx, 0, SIDE_LENGTH - 1);
+    const int nextY = std::clamp(current / SIDE_LENGTH + dy, 0, SIDE_LENGTH - 1);
+    const int next  = nextX + nextY * SIDE_LENGTH;
+
+    if (next == closeOnID)
+        return;
+
+    closeOnID = next;
+    damage();
 }
 
 void COverview::damage() {
@@ -427,6 +503,7 @@ void COverview::render() {
 
 void COverview::fullRender() {
     const auto GAPSIZE = (closing ? (1.0 - size->getPercent()) : size->getPercent()) * GAP_WIDTH;
+    const int  selectedID = std::clamp(closeOnID == -1 ? openedID : closeOnID, 0, sc<int>(images.size()) - 1);
 
     if (pMonitor->m_activeWorkspace != startedOn && !closing) {
         // likely user changed.
@@ -447,6 +524,9 @@ void COverview::fullRender() {
             texbox.round();
             CRegion damage{0, 0, INT16_MAX, INT16_MAX};
             g_pHyprOpenGL->renderTextureInternal(images[x + y * SIDE_LENGTH].fb.getTexture(), texbox, {.damage = &damage, .a = 1.0});
+
+            if (sc<int>(x + y * SIDE_LENGTH) == selectedID)
+                g_pHyprOpenGL->renderRect(texbox, CHyprColor{1.0, 1.0, 1.0, 0.18}, CHyprOpenGLImpl::SRectRenderData{.round = 8});
         }
     }
 }

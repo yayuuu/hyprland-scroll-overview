@@ -4,13 +4,18 @@
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/layout/algorithm/Algorithm.hpp>
+#include <hyprland/src/layout/algorithm/TiledAlgorithm.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
+#include <hyprland/src/layout/supplementary/WorkspaceAlgoMatcher.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/managers/input/trackpad/GestureTypes.hpp>
 #include <hyprland/src/managers/input/trackpad/TrackpadGestures.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
 
 #include <hyprutils/string/ConstVarList.hpp>
 using namespace Hyprutils::String;
@@ -29,6 +34,17 @@ typedef void (*origAddDamageA)(void*, const CBox&);
 typedef void (*origAddDamageB)(void*, const pixman_region32_t*);
 
 static bool g_unloading = false;
+
+static bool isScrollingWorkspace(const PHLWORKSPACE& workspace) {
+    if (!workspace || !workspace->m_space)
+        return false;
+
+    const auto algorithm = workspace->m_space->algorithm();
+    if (!algorithm || !algorithm->tiledAlgo())
+        return false;
+
+    return Layout::Supplementary::algoMatcher()->getNameForTiledAlgo(&typeid(*algorithm->tiledAlgo())) == "scrolling";
+}
 
 // Do NOT change this function.
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -54,6 +70,7 @@ static void hkAddDamageA(void* thisptr, const CBox& box) {
     }
 
     g_pOverview->onDamageReported();
+    ((origAddDamageA)g_pAddDamageHookA->m_original)(thisptr, box);
 }
 
 static void hkAddDamageB(void* thisptr, const pixman_region32_t* rg) {
@@ -65,11 +82,11 @@ static void hkAddDamageB(void* thisptr, const pixman_region32_t* rg) {
     }
 
     g_pOverview->onDamageReported();
+    ((origAddDamageB)g_pAddDamageHookB->m_original)(thisptr, rg);
 }
 
 static SDispatchResult onExpoDispatcher(std::string arg) {
-
-    IS_SCROLLING = g_pLayoutManager->getCurrentLayout()->getLayoutName() == "scrolling";
+    IS_SCROLLING = isScrollingWorkspace(Desktop::focusState()->monitor()->m_activeWorkspace);
 
     if (g_pOverview && g_pOverview->m_isSwiping)
         return {.success = false, .error = "already swiping"};
@@ -176,9 +193,9 @@ static Hyprlang::CParseResult expoGestureKeyword(const char* LHS, const char* RH
     std::expected<void, std::string> resultFromGesture;
 
     if (data[startDataIdx] == "expo")
-        resultFromGesture = g_pTrackpadGestures->addGesture(makeUnique<CExpoGesture>(), fingerCount, direction, modMask, deltaScale);
+        resultFromGesture = g_pTrackpadGestures->addGesture(makeUnique<CExpoGesture>(), fingerCount, direction, modMask, deltaScale, false);
     else if (data[startDataIdx] == "unset")
-        resultFromGesture = g_pTrackpadGestures->removeGesture(fingerCount, direction, modMask, deltaScale);
+        resultFromGesture = g_pTrackpadGestures->removeGesture(fingerCount, direction, modMask, deltaScale, false);
     else {
         result.setError(std::format("Invalid gesture: {}", data[startDataIdx]).c_str());
         return result;
@@ -236,8 +253,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[he] Failed initializing hooks");
     }
 
-    static auto P = HyprlandAPI::registerCallbackDynamic(PHANDLE, "preRender", [](void* self, SCallbackInfo& info, std::any param) {
-        if (!g_pOverview)
+    static auto P = Event::bus()->m_events.render.pre.listen([](PHLMONITOR monitor) {
+        if (!g_pOverview || g_pOverview->pMonitor != monitor)
             return;
         g_pOverview->onPreRender();
     });
