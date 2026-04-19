@@ -188,7 +188,9 @@ static bool overviewBoxIntersectsMonitor(const CBox& box, PHLMONITOR monitor) {
     if (!monitor || box.width <= 0 || box.height <= 0)
         return false;
 
-    return box.x < monitor->m_pixelSize.x && box.x + box.width > 0 && box.y < monitor->m_pixelSize.y && box.y + box.height > 0;
+    const auto RENDERSIZE = monitor->m_size * monitor->m_scale;
+
+    return box.x < RENDERSIZE.x && box.x + box.width > 0 && box.y < RENDERSIZE.y && box.y + box.height > 0;
 }
 
 static int getWorkspaceGap() {
@@ -283,6 +285,14 @@ static float getOverviewHorizontalOverlap(const PHLWINDOW& a, const PHLWINDOW& b
     const double overlap = std::min(APOS.x + ASIZE.x, BPOS.x + BSIZE.x) - std::max(APOS.x, BPOS.x);
 
     return std::max(0.F, sc<float>(overlap));
+}
+
+static void renderOverviewPass(PHLMONITOR monitor) {
+    if (!monitor || g_pHyprRenderer->m_renderPass.empty())
+        return;
+
+    g_pHyprRenderer->m_renderPass.render(CRegion{CBox{{}, monitor->m_size}});
+    g_pHyprRenderer->m_renderPass.clear();
 }
 
 static void roundStandaloneWindowPassElements(const PHLWINDOW& window, PHLMONITOR monitor, float renderScale, size_t firstElement) {
@@ -1108,10 +1118,7 @@ void CScrollOverview::renderWindowLive(PHLMONITOR monitor, PHLWINDOW window, con
     roundStandaloneWindowPassElements(window, monitor, renderScale, firstWindowPassElement);
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = SRenderModifData{}}));
 
-    if (!g_pHyprRenderer->m_renderPass.empty()) {
-        g_pHyprRenderer->m_renderPass.render(CRegion{CBox{{}, pMonitor->m_size}});
-        g_pHyprRenderer->m_renderPass.clear();
-    }
+    renderOverviewPass(monitor);
 }
 
 void CScrollOverview::redrawAll(bool forcelowres) {
@@ -1288,8 +1295,7 @@ void CScrollOverview::render() {
         blurData.roundingPower = 2.F;
         blurData.xray          = false;
         g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(blurData));
-        g_pHyprRenderer->m_renderPass.render(CRegion{CBox{{}, MONITOR->m_size}});
-        g_pHyprRenderer->m_renderPass.clear();
+        renderOverviewPass(MONITOR);
     }
 
     Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
@@ -1336,10 +1342,7 @@ void CScrollOverview::render() {
         g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
     }
 
-    if (!g_pHyprRenderer->m_renderPass.empty()) {
-        g_pHyprRenderer->m_renderPass.render(CRegion{CBox{{}, MONITOR->m_size}});
-        g_pHyprRenderer->m_renderPass.clear();
-    }
+    renderOverviewPass(MONITOR);
 
     for (auto const& ls : MONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]) {
         if (!Desktop::View::validMapped(ls.lock()))
