@@ -227,6 +227,41 @@ static CBox getOverviewWorkspaceBox(PHLMONITOR monitor, float scale, const Vecto
     return box;
 }
 
+static CBox getWorkspaceGlobalBox(PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor) {
+    const auto MONITOR = workspace && workspace->m_monitor ? workspace->m_monitor.lock() : fallbackMonitor;
+    if (!MONITOR)
+        return {};
+
+    return {MONITOR->m_position, MONITOR->m_size};
+}
+
+static CBox centerBoxInWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor) {
+    const auto WORKSPACEBOX = getWorkspaceGlobalBox(workspace, fallbackMonitor);
+    if (WORKSPACEBOX.width <= 0 || WORKSPACEBOX.height <= 0)
+        return box;
+
+    box.x = WORKSPACEBOX.x + std::max(0.F, sc<float>(WORKSPACEBOX.width - box.width)) / 2.F;
+    box.y = WORKSPACEBOX.y + std::max(0.F, sc<float>(WORKSPACEBOX.height - box.height)) / 2.F;
+
+    return box;
+}
+
+static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor) {
+    const auto WORKSPACEBOX = getWorkspaceGlobalBox(workspace, fallbackMonitor);
+    if (WORKSPACEBOX.width <= 0 || WORKSPACEBOX.height <= 0)
+        return box;
+
+    const float MINX = WORKSPACEBOX.x;
+    const float MINY = WORKSPACEBOX.y;
+    const float MAXX = WORKSPACEBOX.x + std::max(0.F, sc<float>(WORKSPACEBOX.width - box.width));
+    const float MAXY = WORKSPACEBOX.y + std::max(0.F, sc<float>(WORKSPACEBOX.height - box.height));
+
+    box.x = std::clamp(sc<float>(box.x), MINX, std::max(MINX, MAXX));
+    box.y = std::clamp(sc<float>(box.y), MINY, std::max(MINY, MAXY));
+
+    return box;
+}
+
 static bool overviewBoxIntersectsMonitor(const CBox& box, PHLMONITOR monitor) {
     if (!monitor || box.width <= 0 || box.height <= 0)
         return false;
@@ -1386,9 +1421,9 @@ void CScrollOverview::endWindowDrag() {
     } else if (WINDOW && MOVEWORKSPACE) {
         g_pCompositor->moveWindowToWorkspaceSafe(WINDOW, DROPWORKSPACE);
         if (TARGET) {
-            const auto GLOBALPOS  = overviewPointToGlobal(dropWorkspaceIdx, DRAGBOX.pos());
             const auto GLOBALSIZE = DRAGBOX.size() * (1.F / std::max(scale->value(), 0.01F));
-            TARGET->setPositionGlobal(CBox{GLOBALPOS, GLOBALSIZE});
+            const auto GLOBALBOX  = centerBoxInWorkspace(CBox{Vector2D{}, GLOBALSIZE}, DROPWORKSPACE, MONITOR);
+            TARGET->setPositionGlobal(GLOBALBOX);
             TARGET->warpPositionSize();
         }
     } else if (TARGET && !dragStartedTiled) {
@@ -1403,9 +1438,12 @@ void CScrollOverview::endWindowDrag() {
         const auto FLOATBOX   = draggedWindowBoxLogical(workspaceIdx);
         const auto GLOBALPOS  = overviewPointToGlobal(workspaceIdx, FLOATBOX.pos());
         const auto GLOBALSIZE = FLOATBOX.size() * (1.F / std::max(scale->value(), 0.01F));
+        auto       GLOBALBOX  = CBox{GLOBALPOS, GLOBALSIZE};
+
+        GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, WINDOW->m_workspace, MONITOR);
 
         TARGET->damageEntire();
-        TARGET->setPositionGlobal(CBox{GLOBALPOS, GLOBALSIZE});
+        TARGET->setPositionGlobal(GLOBALBOX);
         TARGET->warpPositionSize();
         TARGET->damageEntire();
     }
@@ -1790,19 +1828,26 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
 
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM, WORKSPACEBOX, renderScale, now);
 
-    for (const auto& windowRef : workspaceImage->windows) {
-        const auto window = windowRef.lock();
-        if (!window || (!window->m_isMapped && !window->m_fadingOut))
-            continue;
-        if (dragActiveWindow && window == dragActiveWindow)
-            continue;
+    const auto renderWindowsByFullscreenState = [&](bool fullscreen) {
+        for (const auto& windowRef : workspaceImage->windows) {
+            const auto window = windowRef.lock();
+            if (!window || (!window->m_isMapped && !window->m_fadingOut))
+                continue;
+            if (dragActiveWindow && window == dragActiveWindow)
+                continue;
+            if (window->isFullscreen() != fullscreen)
+                continue;
 
-        const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
-        if (!overviewBoxIntersectsMonitor(windowBox, monitor))
-            continue;
+            const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
+            if (!overviewBoxIntersectsMonitor(windowBox, monitor))
+                continue;
 
-        renderWindowLive(monitor, window, windowBox, renderScale, now);
-    }
+            renderWindowLive(monitor, window, windowBox, renderScale, now);
+        }
+    };
+
+    renderWindowsByFullscreenState(false);
+    renderWindowsByFullscreenState(true);
 }
 
 void CScrollOverview::renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now) {
