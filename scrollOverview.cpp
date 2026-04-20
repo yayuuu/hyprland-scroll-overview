@@ -594,6 +594,7 @@ class COverviewWindowShadowPassElement : public IPassElement {
         int           rounding      = 0;
         float         roundingPower = 2.F;
         int           range         = 0;
+        int           renderPower   = 0;
         CHyprColor    color;
         float         alpha        = 1.F;
         bool          ignoreWindow = true;
@@ -621,6 +622,16 @@ class COverviewWindowShadowPassElement : public IPassElement {
 
         auto color = data.color;
         color.a *= data.alpha;
+
+        static auto* const* PGLOBALRENDERPOWER = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:shadow:render_power")->getDataStaticPtr();
+
+        const auto PREVRENDERPOWER = data.renderPower > 0 ? std::optional<int>(**PGLOBALRENDERPOWER) : std::nullopt;
+        if (data.renderPower > 0)
+            **PGLOBALRENDERPOWER = data.renderPower;
+        auto restoreRenderPower = Hyprutils::Utils::CScopeGuard([PREVRENDERPOWER] {
+            if (PREVRENDERPOWER)
+                **PGLOBALRENDERPOWER = *PREVRENDERPOWER;
+        });
 
         if (data.sharp)
             g_pHyprOpenGL->renderRect(data.fullBox, color, {.damage = &shadowDamage, .round = data.rounding, .roundingPower = data.roundingPower});
@@ -1145,15 +1156,6 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
     if (!SHADOW.enabled || SHADOW.range <= 0 || SHADOW.color.a == 0.F)
         return;
 
-    static auto* const* PGLOBALRENDERPOWER = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:shadow:render_power")->getDataStaticPtr();
-
-    const auto PREVRENDERPOWER = **PGLOBALRENDERPOWER;
-    **PGLOBALRENDERPOWER       = SHADOW.renderPower;
-    auto restoreRenderPower    = Hyprutils::Utils::CScopeGuard([PREVRENDERPOWER] {
-        static auto* const* PGLOBALRENDERPOWER = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:shadow:render_power")->getDataStaticPtr();
-        **PGLOBALRENDERPOWER                   = PREVRENDERPOWER;
-    });
-
     const int RANGE = sc<int>(std::round(SHADOW.range * monitor->m_scale * overviewScale));
     if (RANGE <= 0)
         return;
@@ -1162,18 +1164,19 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
     if (FULLBOX.width < 1 || FULLBOX.height < 1)
         return;
 
-    if (!cutoutCenter) {
-        g_pHyprOpenGL->renderRoundedShadow(FULLBOX, 0, 2.F, RANGE, SHADOW.color, 1.F);
-        return;
-    }
-
-    const auto SAVEDDAMAGE = g_pHyprOpenGL->m_renderData.damage;
-    g_pHyprOpenGL->m_renderData.damage = FULLBOX;
-    g_pHyprOpenGL->m_renderData.damage.subtract(workspaceBox).intersect(SAVEDDAMAGE);
-
-    g_pHyprOpenGL->renderRoundedShadow(FULLBOX, 0, 2.F, RANGE, SHADOW.color, 1.F);
-
-    g_pHyprOpenGL->m_renderData.damage = SAVEDDAMAGE;
+    COverviewWindowShadowPassElement::SData data;
+    data.monitor       = monitor;
+    data.fullBox       = FULLBOX;
+    data.cutoutBox     = workspaceBox;
+    data.rounding      = 0;
+    data.roundingPower = 2.F;
+    data.range         = RANGE;
+    data.renderPower   = SHADOW.renderPower;
+    data.color         = SHADOW.color;
+    data.alpha         = 1.F;
+    data.ignoreWindow  = cutoutCenter;
+    data.sharp         = false;
+    g_pHyprRenderer->m_renderPass.add(makeUnique<COverviewWindowShadowPassElement>(data));
 }
 
 size_t CScrollOverview::activeWorkspaceIndex() const {
@@ -1988,6 +1991,7 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
 
     renderWindowsByFullscreenState(false);
     renderWindowsByFullscreenState(true);
+    renderOverviewPass(monitor);
 }
 
 void CScrollOverview::renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now) {
