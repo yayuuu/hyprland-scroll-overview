@@ -11,15 +11,14 @@ plugin {
     scrolloverview {
         gesture_distance = 300 # how far is the "max" for the gesture
         scale = 0.5 # preferred overview scale
-        workspace_gap = 0
+        workspace_gap = 100
         wallpaper = 0 # 0: global only, 1: per-workspace only, 2: both
         blur = false # blur only the main overview wallpaper
 
         shadow {
-            enabled = true
-            range = 4
+            enabled = false
+            range = 50
             render_power = 3
-            ignore_window = true
             color = rgba(1a1a1aee)
         }
     }
