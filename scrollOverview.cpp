@@ -802,7 +802,7 @@ static void renderOverviewWindowBorder(PHLMONITOR monitor, const PHLWINDOW& wind
 }
 
 static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, float renderScale, float alpha) {
-    if (!monitor || !window || !window->m_group || window->m_group->size() <= 1)
+    if (!monitor || !window || !window->m_group || window->m_group->size() < 1)
         return;
 
     static auto PINDICATORHEIGHT        = CConfigValue<Hyprlang::INT>("group:groupbar:indicator_height");
@@ -880,7 +880,7 @@ static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW
 }
 
 static void renderOverviewGroupTabs(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const CBox& workspaceBox, float renderScale) {
-    if (!monitor || !window || !window->m_group || window->m_group->size() <= 1)
+    if (!monitor || !window || !window->m_group || window->m_group->size() < 1)
         return;
 
     auto* const GROUPBAR = dynamic_cast<CHyprGroupBarDecoration*>(window->getDecorationByType(DECORATION_GROUPBAR));
@@ -1072,6 +1072,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_) : started
         emitFullscreenVisibilityState(window, true);
 
         if (window && window->m_monitor == pMonitor) {
+            rebuildPending = true;
             closeOnWindow = window;
             rememberSelection(window);
 
@@ -2079,21 +2080,33 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
 
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM, WORKSPACEBOX, renderScale, now);
 
+    const auto renderOverviewWindow = [&](const PHLWINDOW& window) {
+        if (!shouldShowOverviewWindow(window))
+            return;
+        if (dragActiveWindow && window == getOverviewWindowToShow(dragActiveWindow.lock()))
+            return;
+
+        const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
+        if (!overviewBoxIntersectsMonitor(windowBox, monitor))
+            return;
+
+        renderWindowLive(monitor, window, windowBox, renderScale, now, &WORKSPACEBOX);
+    };
+
+    const auto fullscreenWindow = getOverviewWindowToShow(workspace->getFullscreenWindow());
+    if (shouldShowOverviewWindow(fullscreenWindow) && fullscreenWindow->m_workspace == workspace) {
+        renderOverviewWindow(fullscreenWindow);
+        renderOverviewPass(monitor);
+        return;
+    }
+
     const auto renderWindowsByFullscreenState = [&](bool fullscreen) {
         for (const auto& windowRef : workspaceImage->windows) {
             const auto window = getOverviewWindowToShow(windowRef.lock());
-            if (!shouldShowOverviewWindow(window))
-                continue;
-            if (dragActiveWindow && window == getOverviewWindowToShow(dragActiveWindow.lock()))
-                continue;
             if (window->isFullscreen() != fullscreen)
                 continue;
 
-            const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
-            if (!overviewBoxIntersectsMonitor(windowBox, monitor))
-                continue;
-
-            renderWindowLive(monitor, window, windowBox, renderScale, now, &WORKSPACEBOX);
+            renderOverviewWindow(window);
         }
     };
 
@@ -2195,16 +2208,37 @@ void CScrollOverview::redrawAll(bool forcelowres) {
             imagesByWorkspace.emplace(img->pWorkspace->m_id, img);
     }
 
-    for (const auto& window : g_pCompositor->m_windows) {
+    std::vector<PHLWINDOW> addedWindows;
+    addedWindows.reserve(g_pCompositor->m_windows.size());
+
+    const auto addOverviewWindow = [&](const PHLWINDOW& window) {
         const auto overviewWindow = getOverviewWindowToShow(window);
-        if (overviewWindow != window || !shouldShowOverviewWindow(overviewWindow) || !overviewWindow->m_workspace)
-            continue;
+        if (!shouldShowOverviewWindow(overviewWindow) || !overviewWindow->m_workspace)
+            return;
+
+        if (std::ranges::find(addedWindows, overviewWindow) != addedWindows.end())
+            return;
 
         const auto imageIt = imagesByWorkspace.find(overviewWindow->m_workspace->m_id);
         if (imageIt == imagesByWorkspace.end())
+            return;
+
+        addedWindows.emplace_back(overviewWindow);
+        imageIt->second->windows.emplace_back(overviewWindow);
+    };
+
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (getOverviewWindowToShow(window) != window)
             continue;
 
-        imageIt->second->windows.emplace_back(overviewWindow);
+        addOverviewWindow(window);
+    }
+
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (getOverviewWindowToShow(window) == window)
+            continue;
+
+        addOverviewWindow(window);
     }
 }
 
