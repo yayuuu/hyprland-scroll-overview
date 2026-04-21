@@ -1616,7 +1616,9 @@ void CScrollOverview::endWindowDrag() {
         }
     }
 
-    if (DROPANCHOR) {
+    const bool SCROLLINGLAYOUT = overviewScrollingAlgorithmForTarget(TARGET) != nullptr;
+
+    if (DROPANCHOR && SCROLLINGLAYOUT) {
         const auto LOCAL_X = lastMousePosLocal.x - dropAnchorOverviewBox.x;
         const auto LOCAL_Y = lastMousePosLocal.y - dropAnchorOverviewBox.y;
 
@@ -1635,7 +1637,11 @@ void CScrollOverview::endWindowDrag() {
     } else if (RETILEONEND) {
         TARGET->damageEntire();
 
-        if (DROPANCHOR && !dropDirection.empty())
+        if (DROPANCHOR && !SCROLLINGLAYOUT && DROPANCHOR->layoutTarget()) {
+            DROPANCHOR->layoutTarget()->damageEntire();
+            g_layoutManager->switchTargets(TARGET, DROPANCHOR->layoutTarget(), true);
+            DROPANCHOR->layoutTarget()->damageEntire();
+        } else if (DROPANCHOR && !dropDirection.empty())
             moveOverviewTargetNextToWindow(TARGET, DROPANCHOR, dropDirection);
         else
             moveOverviewTargetToHorizontalEdge(TARGET, horizontalDropSide);
