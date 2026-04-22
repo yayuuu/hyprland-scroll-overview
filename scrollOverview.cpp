@@ -387,7 +387,7 @@ static CBox getPinnedFloatingOverviewWindowBox(PHLMONITOR monitor, const PHLWIND
     const auto RESERVEDWIDTH     = RIGHT ? RESERVEDRIGHT : RESERVEDLEFT;
     const auto CALCULATEDWIDTH   = std::max(1.F, sc<float>((MONITORW - MONITORW * targetOverviewScale) / 2.F - 2.F * WORKSPACEGAP - RESERVEDWIDTH));
     const auto CALCULATEDSCALE   = CALCULATEDWIDTH / sc<float>(WINDOWSIZE.x);
-    const auto WINDOWRENDERSCALE = std::max(CALCULATEDSCALE, targetOverviewScale);
+    const auto WINDOWRENDERSCALE = std::min(1.F, std::max(CALCULATEDSCALE, targetOverviewScale));
     const auto PROGRESS          = std::clamp(animationProgress, 0.F, 1.F);
     const auto CURRENTRENDERSCALE = 1.F + (WINDOWRENDERSCALE - 1.F) * PROGRESS;
     const auto TARGETWIDTH       = sc<float>(WINDOWSIZE.x) * CURRENTRENDERSCALE;
