@@ -30,10 +30,12 @@
 #include <hyprland/src/desktop/view/Popup.hpp>
 #include <hyprland/src/protocols/LayerShell.hpp>
 #include <hyprland/src/devices/IKeyboard.hpp>
+#include <hyprland/src/helpers/math/Math.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/config/ConfigDataValues.hpp>
 #include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/Pass.hpp>
+#include <hyprland/src/render/pass/PreBlurElement.hpp>
 #include <hyprland/src/render/pass/RectPassElement.hpp>
 #include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
 #include <hyprland/src/render/pass/SurfacePassElement.hpp>
@@ -418,6 +420,21 @@ static bool getOverviewBlur() {
     return **PBLUR;
 }
 
+static bool getHyprlandBlurNewOptimizations() {
+    static auto* const* PNEWOPTIMIZATIONS = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:blur:new_optimizations")->getDataStaticPtr();
+    return **PNEWOPTIMIZATIONS;
+}
+
+static int getHyprlandDecorationRounding() {
+    static auto* const* PROUNDING = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:rounding")->getDataStaticPtr();
+    return std::max<int>(0, **PROUNDING);
+}
+
+static float getHyprlandDecorationRoundingPower() {
+    static auto* const* PROUNDINGPOWER = (Hyprlang::FLOAT* const*)HyprlandAPI::getConfigValue(PHANDLE, "decoration:rounding_power")->getDataStaticPtr();
+    return **PROUNDINGPOWER;
+}
+
 static float getOverviewConfiguredScale() {
     static auto* const* PSCALE = (Hyprlang::FLOAT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:scrolloverview:scale")->getDataStaticPtr();
 
@@ -697,6 +714,69 @@ static void renderOverviewPass(PHLMONITOR monitor) {
     g_pHyprRenderer->m_renderPass.clear();
 }
 
+static CRegion roundedRectRegion(const CBox& box, int rounding, float roundingPower) {
+    const auto ROUNDEDBOX = box.copy().round();
+    const int  x          = sc<int>(ROUNDEDBOX.x);
+    const int  y          = sc<int>(ROUNDEDBOX.y);
+    const int  w          = sc<int>(ROUNDEDBOX.width);
+    const int  h          = sc<int>(ROUNDEDBOX.height);
+
+    if (w <= 0 || h <= 0)
+        return {};
+
+    const int radius = std::clamp(rounding, 0, std::min(w, h) / 2);
+    if (radius <= 0)
+        return CRegion{ROUNDEDBOX};
+
+    CRegion    region;
+    const auto power = std::max(roundingPower, 0.1F);
+
+    auto insetForRow = [radius, h, power](int row) {
+        const double rowCenter = row + 0.5;
+        double       dy        = 0.0;
+
+        if (rowCenter < radius)
+            dy = radius - rowCenter;
+        else if (rowCenter > h - radius)
+            dy = rowCenter - (h - radius);
+
+        if (dy <= 0.0)
+            return 0;
+
+        const double radiusPow = std::pow(radius, power);
+        const double inner     = std::pow(std::max(0.0, radiusPow - std::pow(dy, power)), 1.0 / power);
+        return std::clamp(sc<int>(std::ceil(radius - inner)), 0, radius);
+    };
+
+    int runStart = 0;
+    int runInset = insetForRow(0);
+
+    auto addRun = [&](int from, int to, int inset) {
+        if (to <= from)
+            return;
+
+        const int width = w - inset * 2;
+        if (width <= 0)
+            return;
+
+        region.add(CBox{x + inset, y + from, width, to - from});
+    };
+
+    for (int row = 1; row < h; ++row) {
+        const int inset = insetForRow(row);
+        if (inset == runInset)
+            continue;
+
+        addRun(runStart, row, runInset);
+        runStart = row;
+        runInset = inset;
+    }
+
+    addRun(runStart, h, runInset);
+
+    return region;
+}
+
 class COverviewWindowShadowPassElement : public IPassElement {
   public:
     struct SData {
@@ -723,7 +803,7 @@ class COverviewWindowShadowPassElement : public IPassElement {
 
         CRegion shadowDamage = damage.copy().intersect(data.fullBox);
         if (data.ignoreWindow)
-            shadowDamage.subtract(data.cutoutBox.copy().expand(-data.rounding));
+            shadowDamage.subtract(roundedRectRegion(data.cutoutBox, data.rounding + 1, data.roundingPower));
 
         if (shadowDamage.empty())
             return;
@@ -2240,7 +2320,75 @@ void CScrollOverview::emitFullscreenVisibilityState(PHLWINDOW window, bool hideF
     window->m_workspace->m_fullscreenMode      = WORKSPACEMODE;
 }
 
-void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode, const Time::steady_tp& now) {
+static bool shouldBlurOverviewWindowBackground(const PHLWINDOW& window) {
+    return window && g_pHyprRenderer->shouldBlur(window);
+}
+
+static bool shouldUseOverviewPrecomputedBlur(const PHLWINDOW& window) {
+    return getHyprlandBlurNewOptimizations() && shouldShowOverviewWindow(window) && !window->m_isFloating && shouldBlurOverviewWindowBackground(window);
+}
+
+static bool shouldUseOverviewBlurFramebuffer(const PHLWINDOW& window) {
+    return shouldUseOverviewPrecomputedBlur(window) ||
+        (shouldShowOverviewWindow(window) && shouldBlurOverviewWindowBackground(window) && window->m_ruleApplicator->xray().valueOr(false));
+}
+
+static void renderOverviewWindowBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float roundingPower, float alpha, bool usePrecomputedBlur) {
+    if (!monitor || alpha <= 0.F)
+        return;
+
+    CRegion blurDamage{windowBox};
+    if (blurDamage.empty())
+        return;
+
+    CRegion drawDamage{CBox{{}, monitor->m_transformedSize}};
+
+    auto* const SAVEDFB  = g_pHyprOpenGL->m_renderData.currentFB;
+    CFramebuffer* const BLURREDFB = usePrecomputedBlur && g_pHyprOpenGL->m_renderData.pCurrentMonData ? &g_pHyprOpenGL->m_renderData.pCurrentMonData->blurFB :
+                                                                                                         g_pHyprOpenGL->blurMainFramebufferWithDamage(alpha, &blurDamage);
+
+    if (SAVEDFB)
+        SAVEDFB->bind();
+
+    if (!BLURREDFB)
+        return;
+
+    const auto BLURREDTEXTURE = BLURREDFB->getTexture();
+    if (!BLURREDTEXTURE)
+        return;
+
+    CBox transformedBox = windowBox;
+    transformedBox.transform(Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform)), monitor->m_transformedSize.x, monitor->m_transformedSize.y);
+
+    const CBox monitorSpaceBox = {transformedBox.pos().x / monitor->m_pixelSize.x * monitor->m_transformedSize.x,
+                                  transformedBox.pos().y / monitor->m_pixelSize.y * monitor->m_transformedSize.y,
+                                  transformedBox.width / monitor->m_pixelSize.x * monitor->m_transformedSize.x,
+                                  transformedBox.height / monitor->m_pixelSize.y * monitor->m_transformedSize.y};
+
+    CHyprOpenGLImpl::STextureRenderData renderData;
+    renderData.damage                     = &drawDamage;
+    renderData.a                          = alpha;
+    renderData.round                      = rounding;
+    renderData.roundingPower              = roundingPower;
+    renderData.allowCustomUV              = true;
+    renderData.allowDim                   = false;
+
+    g_pHyprOpenGL->pushMonitorTransformEnabled(true);
+    const auto SAVEDRENDERMODIF                  = g_pHyprOpenGL->m_renderData.renderModif;
+    const auto SAVEDUVTOPLEFT                    = g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft;
+    const auto SAVEDUVBOTTOMRIGHT                = g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight;
+    g_pHyprOpenGL->m_renderData.renderModif      = {};
+    g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft     = monitorSpaceBox.pos() / monitor->m_transformedSize;
+    g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight = (monitorSpaceBox.pos() + monitorSpaceBox.size()) / monitor->m_transformedSize;
+    g_pHyprOpenGL->renderTexture(BLURREDTEXTURE, windowBox, renderData);
+    g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft     = SAVEDUVTOPLEFT;
+    g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight = SAVEDUVBOTTOMRIGHT;
+    g_pHyprOpenGL->m_renderData.renderModif                 = SAVEDRENDERMODIF;
+    g_pHyprOpenGL->popMonitorTransformEnabled();
+}
+
+void CScrollOverview::renderWorkspaceBackground(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode,
+                                                const Time::steady_tp& now) {
     const auto& workspaceImage = images[workspaceIdx];
     if (!workspaceImage || !workspaceImage->pWorkspace)
         return;
@@ -2268,6 +2416,29 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
         renderWallpaperLayers(monitor, WORKSPACEBOX, renderScale, now);
 
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM, WORKSPACEBOX, renderScale, now);
+}
+
+void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode, const Time::steady_tp& now) {
+    const auto& workspaceImage = images[workspaceIdx];
+    if (!workspaceImage || !workspaceImage->pWorkspace)
+        return;
+
+    const auto WORKSPACEYOFFSET = (sc<long>(workspaceIdx) - sc<long>(activeIdx)) * workspacePitch;
+    const auto WORKSPACEBOX     = getOverviewWorkspaceBox(monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
+
+    if (!overviewBoxIntersectsMonitor(WORKSPACEBOX, monitor))
+        return;
+
+    const auto workspace         = workspaceImage->pWorkspace;
+    const bool WASVISIBLE        = workspace->m_visible;
+    const bool WASFORCERENDERING = workspace->m_forceRendering;
+    workspace->m_visible         = true;
+    workspace->m_forceRendering  = true;
+
+    auto restoreWorkspaceState = Hyprutils::Utils::CScopeGuard([workspace, WASVISIBLE, WASFORCERENDERING] {
+        workspace->m_visible        = WASVISIBLE;
+        workspace->m_forceRendering = WASFORCERENDERING;
+    });
 
     const auto renderOverviewWindow = [&](const PHLWINDOW& window) {
         if (!shouldShowOverviewWindow(window))
@@ -2279,7 +2450,7 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
         if (!overviewBoxIntersectsMonitor(windowBox, monitor))
             return;
 
-        renderWindowLive(monitor, window, windowBox, renderScale, now, &WORKSPACEBOX);
+        renderWindowLive(monitor, window, windowBox, renderScale, now, &WORKSPACEBOX, shouldUseOverviewPrecomputedBlur(window));
     };
 
     const auto fullscreenWindow = getOverviewWindowToShow(workspace->getFullscreenWindow());
@@ -2301,7 +2472,6 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
 
     renderWindowsByFullscreenState(false);
     renderWindowsByFullscreenState(true);
-    renderOverviewPass(monitor);
 }
 
 void CScrollOverview::renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now) {
@@ -2332,6 +2502,45 @@ void CScrollOverview::renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, 
     renderWindowLive(monitor, WINDOW, windowBox, renderScale, now);
 }
 
+bool CScrollOverview::hasVisiblePrecomputedBlurWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale) const {
+    if (!monitor)
+        return false;
+
+    const auto DRAGGEDWINDOW = getOverviewWindowToShow(dragActiveWindow.lock());
+
+    for (size_t workspaceIdx = 0; workspaceIdx < images.size(); ++workspaceIdx) {
+        const auto& workspaceImage = images[workspaceIdx];
+        if (!workspaceImage || !workspaceImage->pWorkspace)
+            continue;
+
+        const auto WORKSPACEYOFFSET = (sc<long>(workspaceIdx) - sc<long>(activeIdx)) * workspacePitch;
+        const auto WORKSPACEBOX     = getOverviewWorkspaceBox(monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
+        if (!overviewBoxIntersectsMonitor(WORKSPACEBOX, monitor))
+            continue;
+
+        const auto workspace = workspaceImage->pWorkspace;
+
+        const auto isVisiblePrecomputedBlurWindow = [&](const PHLWINDOW& window) {
+            if (window == DRAGGEDWINDOW || !shouldUseOverviewBlurFramebuffer(window))
+                return false;
+
+            const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEYOFFSET);
+            return overviewBoxIntersectsMonitor(windowBox, monitor);
+        };
+
+        const auto fullscreenWindow = getOverviewWindowToShow(workspace->getFullscreenWindow());
+        if (shouldShowOverviewWindow(fullscreenWindow) && fullscreenWindow->m_workspace == workspace)
+            return isVisiblePrecomputedBlurWindow(fullscreenWindow);
+
+        for (const auto& windowRef : workspaceImage->windows) {
+            if (isVisiblePrecomputedBlurWindow(getOverviewWindowToShow(windowRef.lock())))
+                return true;
+        }
+    }
+
+    return false;
+}
+
 void CScrollOverview::renderPinnedFloatingWindows(PHLMONITOR monitor, float overviewScale, const Time::steady_tp& now) {
     if (!monitor)
         return;
@@ -2357,35 +2566,34 @@ void CScrollOverview::renderPinnedFloatingWindows(PHLMONITOR monitor, float over
     }
 }
 
-void CScrollOverview::renderWindowLive(PHLMONITOR monitor, PHLWINDOW window, const CBox& windowBox, float renderScale, const Time::steady_tp& now, const CBox* workspaceBox) {
+void CScrollOverview::renderWindowLive(PHLMONITOR monitor, PHLWINDOW window, const CBox& windowBox, float renderScale, const Time::steady_tp& now, const CBox* workspaceBox,
+                                       bool usePrecomputedBlur) {
     if (!window)
         return;
 
     forceWindowVisible(window);
     forceWindowSurfaceVisibility(window);
 
-    const bool FULLSCREEN = window->isFullscreen();
+    const bool  FULLSCREEN     = window->isFullscreen();
+    const float TARGETOPACITY  = getOverviewWindowTargetOpacity(window);
+    const bool  SHOULD_BLUR_BG = shouldBlurOverviewWindowBackground(window);
 
     if (!FULLSCREEN)
         renderOverviewWindowShadow(monitor, window, windowBox, renderScale, closeOnWindow == window);
 
-    if (g_pHyprRenderer->shouldBlur(window)) {
-        CRectPassElement::SRectData blurData;
-        blurData.box           = windowBox;
-        blurData.color         = CHyprColor{0, 0, 0, 0};
-        blurData.blur          = true;
-        blurData.blurA         = std::sqrt(window->m_alpha->value());
-        blurData.round         = FULLSCREEN ? 0 : sc<int>(std::round(window->rounding() * monitor->m_scale * renderScale));
-        blurData.roundingPower = FULLSCREEN ? 2.F : window->roundingPower();
-        blurData.xray          = window->m_ruleApplicator->xray().valueOr(false);
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(blurData));
+    if (SHOULD_BLUR_BG) {
+        renderOverviewPass(monitor);
+
+        const float BLURALPHA     = std::sqrt(window->m_alpha->value());
+        const int   BLURROUNDING  = FULLSCREEN ? 0 : sc<int>(std::round(getHyprlandDecorationRounding() * monitor->m_scale * renderScale));
+        const float ROUNDINGPOWER = FULLSCREEN ? 2.F : getHyprlandDecorationRoundingPower();
+        renderOverviewWindowBlur(monitor, windowBox, BLURROUNDING, ROUNDINGPOWER, BLURALPHA, usePrecomputedBlur || window->m_ruleApplicator->xray().valueOr(false));
     }
 
     SRenderModifData modif;
     modif.modifs.emplace_back(SRenderModifData::RMOD_TYPE_SCALE, renderScale);
     modif.modifs.emplace_back(SRenderModifData::RMOD_TYPE_TRANSLATE, Vector2D{windowBox.x / monitor->m_scale, windowBox.y / monitor->m_scale});
 
-    const float TARGETOPACITY = getOverviewWindowTargetOpacity(window);
     std::vector<SSurfaceOpacityOverride> surfaceOpacityOverrides;
     surfaceOpacityOverrides.reserve(4);
     overrideWindowSurfaceOpacity(window, surfaceOpacityOverrides, TARGETOPACITY);
@@ -2633,6 +2841,15 @@ void CScrollOverview::render() {
     }
 
     Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
+
+    for (size_t workspaceIdx = 0; workspaceIdx < images.size(); ++workspaceIdx) {
+        renderWorkspaceBackground(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
+    }
+
+    if (hasVisiblePrecomputedBlurWindow(MONITOR, ACTIVEIDX, PITCH, SCALE))
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CPreBlurElement>());
+
+    renderOverviewPass(MONITOR);
 
     for (size_t workspaceIdx = 0; workspaceIdx < images.size(); ++workspaceIdx) {
         renderWorkspaceLive(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
