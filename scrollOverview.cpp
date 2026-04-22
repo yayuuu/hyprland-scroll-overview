@@ -2529,8 +2529,12 @@ bool CScrollOverview::hasVisiblePrecomputedBlurWindow(PHLMONITOR monitor, size_t
         };
 
         const auto fullscreenWindow = getOverviewWindowToShow(workspace->getFullscreenWindow());
-        if (shouldShowOverviewWindow(fullscreenWindow) && fullscreenWindow->m_workspace == workspace)
-            return isVisiblePrecomputedBlurWindow(fullscreenWindow);
+        if (shouldShowOverviewWindow(fullscreenWindow) && fullscreenWindow->m_workspace == workspace) {
+            if (isVisiblePrecomputedBlurWindow(fullscreenWindow))
+                return true;
+
+            continue;
+        }
 
         for (const auto& windowRef : workspaceImage->windows) {
             if (isVisiblePrecomputedBlurWindow(getOverviewWindowToShow(windowRef.lock())))
