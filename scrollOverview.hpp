@@ -8,6 +8,7 @@
 #include <hyprland/src/helpers/signal/Signal.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
+#include <hyprland/src/render/Framebuffer.hpp>
 #include <chrono>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,7 @@ class CScrollOverview : public IOverview {
     virtual void render();
     virtual void damage();
     void         markBlurDirty();
+    void         markBackdropBlurDirty();
     virtual void onDamageReported();
     virtual bool shouldHandleSurfaceDamage(SP<CWLSurfaceResource> surface);
     virtual bool shouldAllowSurfaceFrame(SP<CWLSurfaceResource> surface, const Time::steady_tp& now);
@@ -50,6 +52,8 @@ class CScrollOverview : public IOverview {
     void   redrawAll(bool forcelowres = false);
     void   onWorkspaceChange();
     void   renderWallpaperLayers(PHLMONITOR monitor, const CBox& workspaceBox, float renderScale, const Time::steady_tp& now);
+    void   updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperMode, const Time::steady_tp& now);
+    void   renderBackdropBlurCache(PHLMONITOR monitor);
     void   renderWorkspaceBackground(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode, const Time::steady_tp& now);
     void   renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode, const Time::steady_tp& now);
     bool   hasVisiblePrecomputedBlurWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale) const;
@@ -93,9 +97,12 @@ class CScrollOverview : public IOverview {
     bool   rebuildPending           = false;
     bool   workspaceSyncPending     = false;
     bool   overviewBlurDirty        = true;
+    bool   backdropBlurDirty        = true;
     bool   overviewBlurStateValid   = false;
     float  lastOverviewBlurScale    = 1.F;
+    int    lastBackdropWallpaperMode = -1;
     Vector2D lastOverviewBlurViewOffset = Vector2D{};
+    CFramebuffer backdropBlurFB;
 
     struct SWorkspaceImage {
         PHLWORKSPACE              pWorkspace;

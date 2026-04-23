@@ -51,6 +51,13 @@ static void damageMonitor(WP<Hyprutils::Animation::CBaseAnimatedVariable> thispt
     g_pOverview->damage();
 }
 
+static uint32_t getOverviewFramebufferFormat(PHLMONITOR monitor) {
+    if (!monitor || !monitor->m_output)
+        return DRM_FORMAT_ARGB8888;
+
+    return monitor->inHDR() ? DRM_FORMAT_ABGR16161616F : monitor->m_output->state->state().drmFormat;
+}
+
 static void removeOverview(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
     const auto PMONITOR = g_pOverview ? g_pOverview->pMonitor.lock() : nullptr;
     g_pOverview.reset();
@@ -1158,6 +1165,7 @@ CScrollOverview::~CScrollOverview() {
         wl_event_source_remove(realtimePreviewTimer);
         realtimePreviewTimer = nullptr;
     }
+    backdropBlurFB.release();
     emitFullscreenVisibilityState(Desktop::focusState()->window(), false);
     restoreInputConfigOverrides();
     restoreForcedSurfaceVisibility();
@@ -1477,6 +1485,69 @@ void CScrollOverview::renderWallpaperLayers(PHLMONITOR monitor, const CBox& work
         return;
 
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, workspaceBox, renderScale, now);
+}
+
+void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperMode, const Time::steady_tp& now) {
+    if (!monitor || wallpaperMode == 1 || !getOverviewBlur())
+        return;
+
+    if (lastBackdropWallpaperMode != wallpaperMode) {
+        backdropBlurDirty         = true;
+        lastBackdropWallpaperMode = wallpaperMode;
+    }
+
+    const auto FBFORMAT = getOverviewFramebufferFormat(monitor);
+    if (!backdropBlurFB.isAllocated() || backdropBlurFB.m_size != monitor->m_pixelSize || backdropBlurFB.m_drmFormat != FBFORMAT) {
+        backdropBlurFB.release();
+        backdropBlurFB.alloc(monitor->m_pixelSize.x, monitor->m_pixelSize.y, FBFORMAT);
+        backdropBlurDirty = true;
+    }
+
+    if (!backdropBlurDirty)
+        return;
+
+    auto* const SAVEDFB = g_pHyprOpenGL->m_renderData.currentFB;
+    backdropBlurFB.bind();
+    g_pHyprOpenGL->m_renderData.currentFB = &backdropBlurFB;
+    auto restoreFB = Hyprutils::Utils::CScopeGuard([SAVEDFB] {
+        if (SAVEDFB)
+            SAVEDFB->bind();
+
+        g_pHyprOpenGL->m_renderData.currentFB = SAVEDFB;
+    });
+    g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
+
+    if (wallpaperMode == 0) {
+        g_pHyprRenderer->renderBackground(monitor);
+
+        for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
+            if (!Desktop::View::validMapped(ls.lock()))
+                continue;
+
+            g_pHyprRenderer->renderLayer(ls.lock(), monitor, now);
+        }
+    } else
+        renderWallpaperLayers(monitor, getOverviewWorkspaceBox(monitor, 1.F, Vector2D{}, 0.F), 1.F, now);
+
+    CRectPassElement::SRectData blurData;
+    blurData.box           = CBox{{}, monitor->m_size * monitor->m_scale};
+    blurData.color         = CHyprColor{0.F, 0.F, 0.F, 0.F};
+    blurData.blur          = true;
+    blurData.blurA         = 1.F;
+    blurData.round         = 0;
+    blurData.roundingPower = 2.F;
+    blurData.xray          = false;
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(blurData));
+    renderOverviewPass(monitor);
+
+    backdropBlurDirty = false;
+}
+
+void CScrollOverview::renderBackdropBlurCache(PHLMONITOR monitor) {
+    if (!monitor || !backdropBlurFB.isAllocated() || !backdropBlurFB.getTexture())
+        return;
+
+    g_pHyprOpenGL->renderOffToMain(&backdropBlurFB);
 }
 
 static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& workspaceBox, float overviewScale, bool cutoutCenter) {
@@ -2829,6 +2900,10 @@ void CScrollOverview::markBlurDirty() {
     overviewBlurDirty = true;
 }
 
+void CScrollOverview::markBackdropBlurDirty() {
+    backdropBlurDirty = true;
+}
+
 void CScrollOverview::onDamageReported() {
     return;
 }
@@ -3192,6 +3267,8 @@ bool CScrollOverview::shouldHandleSurfaceDamage(SP<CWLSurfaceResource> surface) 
             return false;
 
         markBlurDirty();
+        if (layerOwner->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+            markBackdropBlurDirty();
         return true;
     }
 
@@ -3320,6 +3397,7 @@ void CScrollOverview::onPreRender() {
         workspaceSyncPending = false;
         rebuildPending       = false;
         markBlurDirty();
+        markBackdropBlurDirty();
         onWorkspaceChange();
         emitFullscreenVisibilityState(Desktop::focusState()->window(), true);
         return;
@@ -3328,6 +3406,7 @@ void CScrollOverview::onPreRender() {
     if (rebuildPending) {
         rebuildPending = false;
         markBlurDirty();
+        markBackdropBlurDirty();
         redrawAll();
         syncSelectionToViewport();
         damage();
@@ -3348,6 +3427,7 @@ void CScrollOverview::onWorkspaceChange() {
     *viewOffset = Vector2D{};
     syncSelectionToViewport();
     markBlurDirty();
+    markBackdropBlurDirty();
     damage();
 }
 
@@ -3375,7 +3455,10 @@ void CScrollOverview::render() {
 
     const auto WALLPAPERMODE = getWallpaperMode();
 
-    if (WALLPAPERMODE == 0) {
+    if (getOverviewBlur() && WALLPAPERMODE != 1) {
+        updateBackdropBlurCache(MONITOR, WALLPAPERMODE, NOW);
+        renderBackdropBlurCache(MONITOR);
+    } else if (WALLPAPERMODE == 0) {
         g_pHyprRenderer->renderBackground(MONITOR);
 
         for (auto const& ls : MONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
@@ -3388,19 +3471,6 @@ void CScrollOverview::render() {
         renderWallpaperLayers(MONITOR, getOverviewWorkspaceBox(MONITOR, 1.F, Vector2D{}, 0.F), 1.F, NOW);
     } else
         g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
-
-    if (getOverviewBlur() && WALLPAPERMODE != 1) {
-        CRectPassElement::SRectData blurData;
-        blurData.box           = CBox{{}, MONITOR->m_size * MONITOR->m_scale};
-        blurData.color         = CHyprColor{0.F, 0.F, 0.F, 0.F};
-        blurData.blur          = true;
-        blurData.blurA         = 1.F;
-        blurData.round         = 0;
-        blurData.roundingPower = 2.F;
-        blurData.xray          = false;
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(blurData));
-        renderOverviewPass(MONITOR);
-    }
 
     Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
 
