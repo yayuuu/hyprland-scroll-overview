@@ -52,11 +52,10 @@ static void damageMonitor(WP<Hyprutils::Animation::CBaseAnimatedVariable> thispt
 }
 
 static uint32_t getOverviewFramebufferFormat(PHLMONITOR monitor) {
-    if (!monitor || !monitor->m_output)
-        return DRM_FORMAT_ARGB8888;
-
-    return monitor->inHDR() ? DRM_FORMAT_ABGR16161616F : monitor->m_output->state->state().drmFormat;
+    return DRM_FORMAT_ARGB8888;
 }
+
+static void renderOverviewWindowBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float roundingPower, float alpha, bool usePrecomputedBlur);
 
 static void removeOverview(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
     const auto PMONITOR = g_pOverview ? g_pOverview->pMonitor.lock() : nullptr;
@@ -1529,16 +1528,8 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
     } else
         renderWallpaperLayers(monitor, getOverviewWorkspaceBox(monitor, 1.F, Vector2D{}, 0.F), 1.F, now);
 
-    CRectPassElement::SRectData blurData;
-    blurData.box           = CBox{{}, monitor->m_size * monitor->m_scale};
-    blurData.color         = CHyprColor{0.F, 0.F, 0.F, 0.F};
-    blurData.blur          = true;
-    blurData.blurA         = 1.F;
-    blurData.round         = 0;
-    blurData.roundingPower = 2.F;
-    blurData.xray          = false;
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(blurData));
     renderOverviewPass(monitor);
+    renderOverviewWindowBlur(monitor, CBox{{}, monitor->m_size * monitor->m_scale}, 0, 2.F, 1.F, false);
 
     backdropBlurDirty = false;
 }
@@ -1547,7 +1538,18 @@ void CScrollOverview::renderBackdropBlurCache(PHLMONITOR monitor) {
     if (!monitor || !backdropBlurFB.isAllocated() || !backdropBlurFB.getTexture())
         return;
 
-    g_pHyprOpenGL->renderOffToMain(&backdropBlurFB);
+    CRegion fullDamage{CBox{{}, monitor->m_transformedSize}};
+    const auto TEX = backdropBlurFB.getTexture();
+    const auto SAVEDTRANSFORM = TEX->m_transform;
+    TEX->m_transform = Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform));
+    auto restoreTransform = Hyprutils::Utils::CScopeGuard([TEX, SAVEDTRANSFORM] { TEX->m_transform = SAVEDTRANSFORM; });
+
+    CHyprOpenGLImpl::STextureRenderData renderData;
+    renderData.damage   = &fullDamage;
+    renderData.a        = 1.F;
+    renderData.allowDim = false;
+
+    g_pHyprOpenGL->renderTexture(TEX, CBox{0, 0, monitor->m_transformedSize.x, monitor->m_transformedSize.y}, renderData);
 }
 
 static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& workspaceBox, float overviewScale, bool cutoutCenter) {
@@ -3397,7 +3399,6 @@ void CScrollOverview::onPreRender() {
         workspaceSyncPending = false;
         rebuildPending       = false;
         markBlurDirty();
-        markBackdropBlurDirty();
         onWorkspaceChange();
         emitFullscreenVisibilityState(Desktop::focusState()->window(), true);
         return;
@@ -3406,7 +3407,6 @@ void CScrollOverview::onPreRender() {
     if (rebuildPending) {
         rebuildPending = false;
         markBlurDirty();
-        markBackdropBlurDirty();
         redrawAll();
         syncSelectionToViewport();
         damage();
@@ -3427,7 +3427,6 @@ void CScrollOverview::onWorkspaceChange() {
     *viewOffset = Vector2D{};
     syncSelectionToViewport();
     markBlurDirty();
-    markBackdropBlurDirty();
     damage();
 }
 
