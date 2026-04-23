@@ -27,6 +27,8 @@ class CScrollOverview : public IOverview {
     void         markBlurDirty();
     virtual void onDamageReported();
     virtual bool shouldHandleSurfaceDamage(SP<CWLSurfaceResource> surface);
+    virtual bool shouldAllowSurfaceFrame(SP<CWLSurfaceResource> surface, const Time::steady_tp& now);
+    virtual bool shouldAllowRealtimePreviewSchedule();
     virtual bool shouldSuppressRenderDamage() const;
     virtual void onPreRender();
 
@@ -79,7 +81,7 @@ class CScrollOverview : public IOverview {
     void   applyInputConfigOverrides();
     void   restoreInputConfigOverrides();
     size_t activeWorkspaceIndex() const;
-    bool   shouldBlockSurfaceFeedback();
+    void   sendOverviewFrameCallbacks(const Time::steady_tp& now);
     bool   isVisibleRealtimePreviewWindow(const PHLWINDOW& window) const;
     bool   shouldAllowRealtimePreviewFrame() const;
     void   scheduleMinimumPreviewFrame();
@@ -115,6 +117,8 @@ class CScrollOverview : public IOverview {
     bool                             emittingFullscreenVisibilityState = false;
     bool                             inputConfigOverridden = false;
     bool                             realtimePreviewTimerArmed = false;
+    bool                             realtimePreviewFrameQueued = false;
+    bool                             sendingOverviewFrameCallbacks = false;
     int                              previousNoWarps = 0;
     int                              previousWarpOnChangeWorkspace = 0;
     int                              previousWarpOnToggleSpecial = 0;

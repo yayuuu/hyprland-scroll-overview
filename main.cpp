@@ -1,9 +1,6 @@
 #define WLR_USE_UNSTABLE
 
 #include <unistd.h>
-#include <array>
-#include <chrono>
-#include <fstream>
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
@@ -11,8 +8,8 @@
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
-#include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/managers/input/trackpad/GestureTypes.hpp>
 #include <hyprland/src/managers/input/trackpad/TrackpadGestures.hpp>
@@ -30,11 +27,15 @@ inline CFunctionHook* g_pAddDamageHookA      = nullptr;
 inline CFunctionHook* g_pAddDamageHookB      = nullptr;
 inline CFunctionHook* g_pDamageSurfaceHook   = nullptr;
 inline CFunctionHook* g_pScheduleFrameHook   = nullptr;
+inline CFunctionHook* g_pSendFrameEventsHook = nullptr;
+inline CFunctionHook* g_pSurfaceFrameHook     = nullptr;
 typedef void (*origRenderWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, timespec*, const CBox&);
 typedef void (*origAddDamageA)(void*, const CBox&);
 typedef void (*origAddDamageB)(void*, const pixman_region32_t*);
 typedef void (*origDamageSurface)(void*, SP<CWLSurfaceResource>, double, double, double);
 typedef void (*origScheduleFrameForMonitor)(void*, PHLMONITOR, Aquamarine::IOutput::scheduleFrameReason);
+typedef void (*origSendFrameEventsToWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&);
+typedef void (*origSurfaceFrame)(void*, const Time::steady_tp&);
 
 static bool g_unloading = false;
 
@@ -45,70 +46,17 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 static bool renderingOverview = false;
 static bool damageFromSurface = false;
-static uint64_t suppressedOverviewRenderDamage = 0;
-
-static void overviewDiagLog(const std::string& message) {
-    std::ofstream file("/tmp/scrolloverview-debug.log", std::ios::app);
-    file << message << '\n';
-}
-
-static const char* scheduleReasonName(Aquamarine::IOutput::scheduleFrameReason reason) {
-    using enum Aquamarine::IOutput::scheduleFrameReason;
-
-    switch (reason) {
-        case AQ_SCHEDULE_UNKNOWN: return "UNKNOWN";
-        case AQ_SCHEDULE_NEW_CONNECTOR: return "NEW_CONNECTOR";
-        case AQ_SCHEDULE_CURSOR_VISIBLE: return "CURSOR_VISIBLE";
-        case AQ_SCHEDULE_CURSOR_SHAPE: return "CURSOR_SHAPE";
-        case AQ_SCHEDULE_CURSOR_MOVE: return "CURSOR_MOVE";
-        case AQ_SCHEDULE_CLIENT_UNKNOWN: return "CLIENT_UNKNOWN";
-        case AQ_SCHEDULE_DAMAGE: return "DAMAGE";
-        case AQ_SCHEDULE_NEW_MONITOR: return "NEW_MONITOR";
-        case AQ_SCHEDULE_RENDER_MONITOR: return "RENDER_MONITOR";
-        case AQ_SCHEDULE_NEEDS_FRAME: return "NEEDS_FRAME";
-        case AQ_SCHEDULE_ANIMATION: return "ANIMATION";
-        case AQ_SCHEDULE_ANIMATION_DAMAGE: return "ANIMATION_DAMAGE";
-        default: return "OTHER";
-    }
-}
 
 static void hkScheduleFrameForMonitor(void* thisptr, PHLMONITOR monitor, Aquamarine::IOutput::scheduleFrameReason reason) {
     if (g_pOverview && g_pOverview->pMonitor == monitor) {
-        static std::array<uint64_t, 16> counts = {};
-        static auto                    lastLog = std::chrono::steady_clock::now();
+        using enum Aquamarine::IOutput::scheduleFrameReason;
 
-        const auto idx = std::min<size_t>(sc<size_t>(reason), counts.size() - 1);
-        counts[idx]++;
+        const bool THROTTLEDREASON =
+            reason == AQ_SCHEDULE_UNKNOWN || reason == AQ_SCHEDULE_CLIENT_UNKNOWN || reason == AQ_SCHEDULE_NEEDS_FRAME || reason == AQ_SCHEDULE_RENDER_MONITOR ||
+            reason == AQ_SCHEDULE_DAMAGE;
 
-        const auto now = std::chrono::steady_clock::now();
-        if (now - lastLog >= std::chrono::seconds(1)) {
-            std::string summary;
-            for (size_t i = 0; i < counts.size(); ++i) {
-                if (counts[i] == 0)
-                    continue;
-
-                if (!summary.empty())
-                    summary += ", ";
-
-                summary += std::format("{}={}", scheduleReasonName(sc<Aquamarine::IOutput::scheduleFrameReason>(i)), counts[i]);
-                counts[i] = 0;
-            }
-
-            if (suppressedOverviewRenderDamage > 0) {
-                if (!summary.empty())
-                    summary += ", ";
-
-                summary += std::format("SUPPRESSED_RENDER_DAMAGE={}", suppressedOverviewRenderDamage);
-                suppressedOverviewRenderDamage = 0;
-            }
-
-            if (!summary.empty())
-                Log::logger->log(Log::WARN, "[scrolloverview] scheduleFrameForMonitor while overview: {}", summary);
-            if (!summary.empty())
-                overviewDiagLog("scheduleFrameForMonitor while overview: " + summary);
-
-            lastLog = now;
-        }
+        if (THROTTLEDREASON && !g_pOverview->blockDamageReporting && !g_pOverview->shouldAllowRealtimePreviewSchedule())
+            return;
     }
 
     ((origScheduleFrameForMonitor)g_pScheduleFrameHook->m_original)(thisptr, monitor, reason);
@@ -135,11 +83,26 @@ static void hkDamageSurface(void* thisptr, SP<CWLSurfaceResource> surface, doubl
     }
 }
 
+static void hkSendFrameEventsToWorkspace(void* thisptr, PHLMONITOR monitor, PHLWORKSPACE workspace, const Time::steady_tp& now) {
+    if (g_pOverview && g_pOverview->pMonitor == monitor)
+        return;
+
+    ((origSendFrameEventsToWorkspace)g_pSendFrameEventsHook->m_original)(thisptr, monitor, workspace, now);
+}
+
+static void hkSurfaceFrame(void* thisptr, const Time::steady_tp& now) {
+    const auto SURFACE = sc<CWLSurfaceResource*>(thisptr)->m_self.lock();
+
+    if (g_pOverview && !g_pOverview->shouldAllowSurfaceFrame(SURFACE, now))
+        return;
+
+    ((origSurfaceFrame)g_pSurfaceFrameHook->m_original)(thisptr, now);
+}
+
 static void hkAddDamageA(void* thisptr, const CBox& box) {
     const auto PMONITOR = (CMonitor*)thisptr;
 
     if (g_pOverview && g_pOverview->pMonitor == PMONITOR->m_self && renderingOverview && !damageFromSurface && g_pOverview->shouldSuppressRenderDamage()) {
-        suppressedOverviewRenderDamage++;
         return;
     }
 
@@ -156,7 +119,6 @@ static void hkAddDamageB(void* thisptr, const pixman_region32_t* rg) {
     const auto PMONITOR = (CMonitor*)thisptr;
 
     if (g_pOverview && g_pOverview->pMonitor == PMONITOR->m_self && renderingOverview && !damageFromSurface && g_pOverview->shouldSuppressRenderDamage()) {
-        suppressedOverviewRenderDamage++;
         return;
     }
 
@@ -318,6 +280,22 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_pDamageSurfaceHook = HyprlandAPI::createFunctionHook(PHANDLE, FNS[0].address, (void*)hkDamageSurface);
 
+    FNS = HyprlandAPI::findFunctionsByName(PHANDLE, "sendFrameEventsToWorkspace");
+    if (FNS.empty()) {
+        failNotif("no fns for hook sendFrameEventsToWorkspace");
+        throw std::runtime_error("[he] No fns for hook sendFrameEventsToWorkspace");
+    }
+
+    g_pSendFrameEventsHook = HyprlandAPI::createFunctionHook(PHANDLE, FNS[0].address, (void*)hkSendFrameEventsToWorkspace);
+
+    FNS = HyprlandAPI::findFunctionsByName(PHANDLE, "_ZN18CWLSurfaceResource5frameERKNSt6chrono10time_pointINS0_3_V212steady_clockENS0_8durationIlSt5ratioILl1ELl1000000000EEEEEE");
+    if (FNS.empty()) {
+        failNotif("no fns for hook CWLSurfaceResource::frame");
+        throw std::runtime_error("[he] No fns for hook CWLSurfaceResource::frame");
+    }
+
+    g_pSurfaceFrameHook = HyprlandAPI::createFunctionHook(PHANDLE, FNS[0].address, (void*)hkSurfaceFrame);
+
     FNS = HyprlandAPI::findFunctionsByName(PHANDLE, "addDamageEPK15pixman_region32");
     if (FNS.empty()) {
         failNotif("no fns for hook addDamageEPK15pixman_region32");
@@ -337,20 +315,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     bool success = g_pRenderWorkspaceHook->hook();
     success      = success && g_pScheduleFrameHook->hook();
     success      = success && g_pDamageSurfaceHook->hook();
+    success      = success && g_pSendFrameEventsHook->hook();
+    success      = success && g_pSurfaceFrameHook->hook();
     success      = success && g_pAddDamageHookA->hook();
     success      = success && g_pAddDamageHookB->hook();
-
-    if (success)
-        Log::logger->log(Log::WARN, "[scrolloverview] frame diagnostics hook installed");
-    if (success)
-        overviewDiagLog("frame diagnostics hook installed");
 
     if (!success) {
         failNotif("Failed initializing hooks");
         throw std::runtime_error("[he] Failed initializing hooks");
     }
-
-    HyprlandAPI::addNotification(PHANDLE, "[scrolloverview] diagnostics build loaded", CHyprColor{0.2, 0.8, 1.0, 1.0}, 3000);
 
     static auto P = Event::bus()->m_events.render.pre.listen([](PHLMONITOR monitor) {
         if (!g_pOverview || g_pOverview->pMonitor != monitor)
