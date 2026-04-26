@@ -127,6 +127,7 @@ class CScrollOverview : public IOverview {
     Vector2D                         dragStartMouseLocal   = Vector2D{};
     Vector2D                         dragOriginalFloatSize = Vector2D{};
     Vector2D                         resizeStartMouseLocal = Vector2D{};
+    Vector2D                         resizeLastMouseLocal  = Vector2D{};
     CBox                             dragOriginalBox        = CBox{};
     CBox                             resizeOriginalBox      = CBox{};
     size_t                           resizeWorkspaceIdx     = 0;
