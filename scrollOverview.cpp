@@ -55,6 +55,7 @@ static uint32_t getOverviewFramebufferFormat(PHLMONITOR monitor) {
     return DRM_FORMAT_ARGB8888;
 }
 
+static PHLWINDOW getOverviewFullscreenVisibilityWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& fallback = {});
 static void renderOverviewWindowBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float roundingPower, float alpha, bool usePrecomputedBlur);
 
 static void removeOverview(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
@@ -355,15 +356,16 @@ static CBox centerBoxInWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fa
     return box;
 }
 
-static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor) {
+static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor, float margin = 0.F) {
     const auto WORKSPACEBOX = getWorkspaceGlobalBox(workspace, fallbackMonitor);
     if (WORKSPACEBOX.width <= 0 || WORKSPACEBOX.height <= 0)
         return box;
 
-    const float MINX = WORKSPACEBOX.x;
-    const float MINY = WORKSPACEBOX.y;
-    const float MAXX = WORKSPACEBOX.x + std::max(0.F, sc<float>(WORKSPACEBOX.width - box.width));
-    const float MAXY = WORKSPACEBOX.y + std::max(0.F, sc<float>(WORKSPACEBOX.height - box.height));
+    const float CLAMPMARGIN = std::max(0.F, margin);
+    const float MINX        = WORKSPACEBOX.x + CLAMPMARGIN;
+    const float MINY        = WORKSPACEBOX.y + CLAMPMARGIN;
+    const float MAXX        = WORKSPACEBOX.x + std::max(0.F, sc<float>(WORKSPACEBOX.width - box.width - 2.F * CLAMPMARGIN)) + CLAMPMARGIN;
+    const float MAXY        = WORKSPACEBOX.y + std::max(0.F, sc<float>(WORKSPACEBOX.height - box.height - 2.F * CLAMPMARGIN)) + CLAMPMARGIN;
 
     box.x = std::clamp(sc<float>(box.x), MINX, std::max(MINX, MAXX));
     box.y = std::clamp(sc<float>(box.y), MINY, std::max(MINY, MAXY));
@@ -1165,7 +1167,9 @@ CScrollOverview::~CScrollOverview() {
         realtimePreviewTimer = nullptr;
     }
     backdropBlurFB.release();
-    emitFullscreenVisibilityState(Desktop::focusState()->window(), false);
+    const auto MONITOR = pMonitor.lock();
+    const auto WORKSPACE = MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{};
+    emitFullscreenVisibilityState(getOverviewFullscreenVisibilityWindow(WORKSPACE, Desktop::focusState()->window()), false);
     restoreInputConfigOverrides();
     restoreForcedSurfaceVisibility();
     restoreForcedWindowVisibility();
@@ -1486,6 +1490,20 @@ void CScrollOverview::renderWallpaperLayers(PHLMONITOR monitor, const CBox& work
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, workspaceBox, renderScale, now);
 }
 
+void CScrollOverview::renderGlobalWallpaper(PHLMONITOR monitor, const Time::steady_tp& now) {
+    if (!monitor)
+        return;
+
+    g_pHyprRenderer->renderBackground(monitor);
+
+    for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
+        if (!Desktop::View::validMapped(ls.lock()))
+            continue;
+
+        g_pHyprRenderer->renderLayer(ls.lock(), monitor, now);
+    }
+}
+
 void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperMode, const Time::steady_tp& now) {
     if (!monitor || wallpaperMode == 1 || !getOverviewBlur())
         return;
@@ -1516,17 +1534,7 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
     });
     g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
 
-    if (wallpaperMode == 0) {
-        g_pHyprRenderer->renderBackground(monitor);
-
-        for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
-            if (!Desktop::View::validMapped(ls.lock()))
-                continue;
-
-            g_pHyprRenderer->renderLayer(ls.lock(), monitor, now);
-        }
-    } else
-        renderWallpaperLayers(monitor, getOverviewWorkspaceBox(monitor, 1.F, Vector2D{}, 0.F), 1.F, now);
+    renderGlobalWallpaper(monitor, now);
 
     renderOverviewPass(monitor);
     renderOverviewWindowBlur(monitor, CBox{{}, monitor->m_size * monitor->m_scale}, 0, 2.F, 1.F, false);
@@ -2029,7 +2037,7 @@ void CScrollOverview::endWindowDrag() {
         const auto GLOBALSIZE = FLOATBOX.size() * (1.F / (std::max(scale->value(), 0.01F) * std::max(MONITOR ? MONITOR->m_scale : 1.F, 0.01F)));
         auto       GLOBALBOX  = CBox{GLOBALPOS, GLOBALSIZE};
 
-        GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, WINDOW->m_workspace, MONITOR);
+        GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, WINDOW->m_workspace, MONITOR, WINDOW->getRealBorderSize());
 
         TARGET->damageEntire();
         TARGET->setPositionGlobal(GLOBALBOX);
@@ -2528,6 +2536,15 @@ static bool shouldUseOverviewPrecomputedBlur(const PHLWINDOW& window) {
 static bool shouldUseOverviewBlurFramebuffer(const PHLWINDOW& window) {
     return shouldUseOverviewPrecomputedBlur(window) ||
         (shouldShowOverviewWindow(window) && shouldBlurOverviewWindowBackground(window) && window->m_ruleApplicator->xray().valueOr(false));
+}
+
+static PHLWINDOW getOverviewFullscreenVisibilityWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& fallback) {
+    const auto FULLSCREENWINDOW = workspace ? getOverviewWindowToShow(workspace->getFullscreenWindow()) : PHLWINDOW{};
+
+    if (shouldShowOverviewWindow(FULLSCREENWINDOW) && FULLSCREENWINDOW->m_workspace == workspace)
+        return FULLSCREENWINDOW;
+
+    return getOverviewWindowToShow(fallback);
 }
 
 static void renderOverviewWindowBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float roundingPower, float alpha, bool usePrecomputedBlur) {
@@ -3378,8 +3395,9 @@ void CScrollOverview::close() {
         }
     }
 
-    const auto FINALWINDOW = getOverviewWindowToShow(closeOnWindow.lock());
-    emitFullscreenVisibilityState(FINALWINDOW && FINALWINDOW->m_workspace == pMonitor->m_activeWorkspace ? FINALWINDOW : PHLWINDOW{}, false);
+    const auto FINALWINDOW    = getOverviewWindowToShow(closeOnWindow.lock());
+    const auto FINALWORKSPACE = FINALWINDOW ? FINALWINDOW->m_workspace : SELECTEDWORKSPACE;
+    emitFullscreenVisibilityState(getOverviewFullscreenVisibilityWindow(FINALWORKSPACE, FINALWINDOW), false);
 
     *scale = 1.F;
 
@@ -3457,17 +3475,8 @@ void CScrollOverview::render() {
     if (getOverviewBlur() && WALLPAPERMODE != 1) {
         updateBackdropBlurCache(MONITOR, WALLPAPERMODE, NOW);
         renderBackdropBlurCache(MONITOR);
-    } else if (WALLPAPERMODE == 0) {
-        g_pHyprRenderer->renderBackground(MONITOR);
-
-        for (auto const& ls : MONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
-            if (!Desktop::View::validMapped(ls.lock()))
-                continue;
-
-            g_pHyprRenderer->renderLayer(ls.lock(), MONITOR, NOW);
-        }
-    } else if (WALLPAPERMODE == 2) {
-        renderWallpaperLayers(MONITOR, getOverviewWorkspaceBox(MONITOR, 1.F, Vector2D{}, 0.F), 1.F, NOW);
+    } else if (WALLPAPERMODE == 0 || WALLPAPERMODE == 2) {
+        renderGlobalWallpaper(MONITOR, NOW);
     } else
         g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
 
