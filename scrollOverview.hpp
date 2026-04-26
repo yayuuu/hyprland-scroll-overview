@@ -8,6 +8,7 @@
 #include <hyprland/src/helpers/signal/Signal.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
 #include <chrono>
 #include <unordered_map>
@@ -75,6 +76,10 @@ class CScrollOverview : public IOverview {
     void      beginWindowDrag();
     void      updateWindowDrag();
     void      endWindowDrag();
+    CBox      resizedWindowBox() const;
+    void      beginWindowResize();
+    void      updateWindowResize();
+    void      endWindowResize();
     void   forceSurfaceVisibility(SP<CWLSurfaceResource> surface);
     void   forceWindowSurfaceVisibility(PHLWINDOW window);
     void   forceWindowVisible(PHLWINDOW window);
@@ -116,11 +121,18 @@ class CScrollOverview : public IOverview {
     PHLWINDOWREF                     dragPendingWindow;
     PHLWINDOWREF                     dragActiveWindow;
     PHLWORKSPACEREF                  dragOriginalWorkspace;
+    PHLWINDOWREF                     resizePendingWindow;
+    PHLWINDOWREF                     resizeActiveWindow;
 
     Vector2D                         dragStartMouseLocal   = Vector2D{};
     Vector2D                         dragOriginalFloatSize = Vector2D{};
+    Vector2D                         resizeStartMouseLocal = Vector2D{};
     CBox                             dragOriginalBox        = CBox{};
+    CBox                             resizeOriginalBox      = CBox{};
+    size_t                           resizeWorkspaceIdx     = 0;
+    Layout::eRectCorner              resizeCorner           = Layout::CORNER_NONE;
     bool                             dragPointerDown       = false;
+    bool                             resizePointerDown     = false;
     bool                             dragStartedTiled      = false;
     bool                             emittingFullscreenVisibilityState = false;
     bool                             inputConfigOverridden = false;
