@@ -1,10 +1,31 @@
 # ScrollOverview
+
 ScrollOverview is an overview plugin like niri.
-  
+
 https://github.com/user-attachments/assets/7ab51651-7901-44d4-b906-357f4c2869c1
-  
+
+## Installation
+
+### Using Hyprpm (recommended)
+
+1. Add the plugin repository:
+   ```bash
+   hyprpm add https://github.com/yayuuu/hyprland-scroll-overview.git
+   ```
+2. Build and fetch dependencies:
+   ```bash
+   hyprpm update
+   ```
+3. Enable the plugin:
+   ```bash
+   hyprpm enable scrolloverview
+   ```
+4. Configure and Enjoy.
+
 ## Config
-A great start to configure this plugin would be adding this code to the `plugin` section of your hyprland configuration file:  
+
+A great start to configure this plugin would be adding this code to the `plugin` section of your hyprland configuration file:
+
 ```ini
 # .config/hypr/hyprland.conf
 plugin {
@@ -27,13 +48,13 @@ plugin {
 
 ### Properties
 
-| property | type | description | default |
-| --- | --- | --- | --- |
-|gesture_distance | number | how far is the max for the gesture | `300`|
-|scale | float | overview scale, [0.1 - 0.9] | `0.5` |
-|workspace_gap | number | gap between visible workspaces in the overview, in pixels | `0`|
-|wallpaper | int | wallpaper mode: `0` global only, `1` per-workspace only, `2` both | `0`|
-|blur | bool | blur the main overview wallpaper without blurring workspace wallpapers | `false`|
+| property         | type   | description                                                            | default |
+| ---------------- | ------ | ---------------------------------------------------------------------- | ------- |
+| gesture_distance | number | how far is the max for the gesture                                     | `300`   |
+| scale            | float  | overview scale, [0.1 - 0.9]                                            | `0.5`   |
+| workspace_gap    | number | gap between visible workspaces in the overview, in pixels              | `0`     |
+| wallpaper        | int    | wallpaper mode: `0` global only, `1` per-workspace only, `2` both      | `0`     |
+| blur             | bool   | blur the main overview wallpaper without blurring workspace wallpapers | `false` |
 
 #### Subcategory `shadow`
 
@@ -48,17 +69,19 @@ Controls the shadow around each workspace card. `enabled` defaults to `false`; a
 
 ### Keywords
 
-| name | description | arguments |
-| -- | -- | -- | 
+| name                   | description                                                             | arguments       |
+| ---------------------- | ----------------------------------------------------------------------- | --------------- |
 | scrolloverview-gesture | same as gesture, but for ScrollOverview gestures. Supports: `overview`. | Same as gesture |
 
 ### Binding
+
 ```bash
 # hyprland.conf
 bind = MODIFIER, KEY, scrolloverview:overview, OPTION
 ```
 
-Example:  
+Example:
+
 ```bash
 # This will toggle ScrollOverview when SUPER+g is pressed
 bind = SUPER, g, scrolloverview:overview, toggle
