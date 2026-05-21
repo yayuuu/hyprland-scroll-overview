@@ -14,11 +14,14 @@
 #include <utility>
 #include <vector>
 #define private public
+#include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/helpers/math/Math.hpp>
 #undef private
 #include <hyprutils/utils/ScopeGuard.hpp>
 #include "IOverview.hpp"
+
+using Render::GL::g_pHyprOpenGL;
 
 static CRegion roundedRectRegion(const CBox& box, int rounding, float roundingPower) {
     const auto ROUNDEDBOX = box.copy().round();
@@ -128,9 +131,9 @@ void COverviewShadowPassElement::draw(const CRegion& damage) {
     if (shadowDamage.empty())
         return;
 
-    const auto SAVEDDAMAGE = g_pHyprOpenGL->m_renderData.damage;
-    g_pHyprOpenGL->m_renderData.damage = shadowDamage;
-    auto restoreDamage = Hyprutils::Utils::CScopeGuard([SAVEDDAMAGE] { g_pHyprOpenGL->m_renderData.damage = SAVEDDAMAGE; });
+    const auto SAVEDDAMAGE = g_pHyprRenderer->m_renderData.damage;
+    g_pHyprRenderer->m_renderData.damage = shadowDamage;
+    auto restoreDamage = Hyprutils::Utils::CScopeGuard([SAVEDDAMAGE] { g_pHyprRenderer->m_renderData.damage = SAVEDDAMAGE; });
 
     auto color = data.color;
     color.a *= data.alpha;

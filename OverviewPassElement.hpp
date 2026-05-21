@@ -16,6 +16,10 @@ class CScrollOverviewPassElement : public IPassElement {
     virtual const char*         passName() {
         return "CScrollOverviewPassElement";
     }
+
+    virtual ePassElementType type() {
+        return EK_CUSTOM;
+    }
 };
 
 class COverviewShadowPassElement : public IPassElement {
@@ -45,6 +49,10 @@ class COverviewShadowPassElement : public IPassElement {
 
     virtual const char*         passName() {
         return "COverviewShadowPassElement";
+    }
+
+    virtual ePassElementType type() {
+        return EK_CUSTOM;
     }
 
   private:

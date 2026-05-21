@@ -9,7 +9,7 @@
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
-#include <hyprland/src/render/Framebuffer.hpp>
+#include <hyprland/src/render/gl/GLFramebuffer.hpp>
 #include <chrono>
 #include <unordered_map>
 #include <vector>
@@ -110,7 +110,7 @@ class CScrollOverview : public IOverview {
     float  lastOverviewBlurScale    = 1.F;
     int    lastBackdropWallpaperMode = -1;
     Vector2D lastOverviewBlurViewOffset = Vector2D{};
-    CFramebuffer backdropBlurFB;
+    SP<Render::GL::CGLFramebuffer> backdropBlurFB = makeShared<Render::GL::CGLFramebuffer>();
 
     struct SWorkspaceImage {
         PHLWORKSPACE              pWorkspace;

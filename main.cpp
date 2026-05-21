@@ -339,7 +339,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_pScrollRenderWorkspaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("renderWorkspace", "CHyprRenderer::renderWorkspace("),
+        findFnOrThrow("renderWorkspace", "Render::IHyprRenderer::renderWorkspace("),
         (void*)hkRenderWorkspace);
 
     g_pScrollScheduleFrameHook = HyprlandAPI::createFunctionHook(
@@ -349,12 +349,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_pScrollDamageSurfaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("damageSurface", "CHyprRenderer::damageSurface("),
+        findFnOrThrow("damageSurface", "Render::IHyprRenderer::damageSurface("),
         (void*)hkDamageSurface);
 
     g_pScrollSendFrameEventsHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("sendFrameEventsToWorkspace", "CHyprRenderer::sendFrameEventsToWorkspace("),
+        findFnOrThrow("sendFrameEventsToWorkspace", "Render::IHyprRenderer::sendFrameEventsToWorkspace("),
         (void*)hkSendFrameEventsToWorkspace);
 
     g_pScrollSurfaceFrameHook = HyprlandAPI::createFunctionHook(
@@ -405,5 +405,5 @@ APICALL EXPORT void PLUGIN_EXIT() {
     g_pScrollOverview.reset();
     disableScrollOverviewHooks();
 
-    g_pConfigManager->reload(); // we need to reload now to clear all the gestures
+    Config::mgr()->reload(); // we need to reload now to clear all the gestures
 }

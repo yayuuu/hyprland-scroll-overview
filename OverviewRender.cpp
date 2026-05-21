@@ -5,8 +5,13 @@
 #define private public
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
+#include <hyprland/src/render/gl/GLFramebuffer.hpp>
+#include <hyprland/src/helpers/MonitorResources.hpp>
 #include <hyprland/src/helpers/math/Math.hpp>
 #undef private
+
+using Render::GL::g_pHyprOpenGL;
+using Render::GL::CHyprOpenGLImpl;
 
 namespace OverviewRender {
 
@@ -28,17 +33,19 @@ void renderBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float r
 
     CRegion drawDamage{CBox{{}, monitor->m_transformedSize}};
 
-    auto* const SAVEDFB            = g_pHyprOpenGL->m_renderData.currentFB;
-    CFramebuffer* const BLURREDFB = usePrecomputedBlur && g_pHyprOpenGL->m_renderData.pCurrentMonData ? &g_pHyprOpenGL->m_renderData.pCurrentMonData->blurFB :
-                                                                                                          g_pHyprOpenGL->blurMainFramebufferWithDamage(alpha, &blurDamage);
+    const auto SAVEDFB        = g_pHyprRenderer->m_renderData.currentFB;
+    const auto MONITORRES     = monitor->resources().lock();
+    const auto PRECOMPUTEDFB  = (usePrecomputedBlur && MONITORRES) ? MONITORRES->m_blurFB : nullptr;
+
+    SP<Render::ITexture> BLURREDTEXTURE;
+    if (PRECOMPUTEDFB)
+        BLURREDTEXTURE = PRECOMPUTEDFB->getTexture();
+    else if (g_pHyprRenderer->m_renderData.mainFB)
+        BLURREDTEXTURE = g_pHyprRenderer->blurMainFramebuffer(alpha, &blurDamage);
 
     if (SAVEDFB)
         SAVEDFB->bind();
 
-    if (!BLURREDFB)
-        return;
-
-    const auto BLURREDTEXTURE = BLURREDFB->getTexture();
     if (!BLURREDTEXTURE)
         return;
 
@@ -58,18 +65,18 @@ void renderBlur(PHLMONITOR monitor, const CBox& windowBox, int rounding, float r
     renderData.allowCustomUV                        = true;
     renderData.allowDim                             = false;
 
-    g_pHyprOpenGL->pushMonitorTransformEnabled(true);
-    const auto SAVEDRENDERMODIF                     = g_pHyprOpenGL->m_renderData.renderModif;
-    const auto SAVEDUVTOPLEFT                       = g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft;
-    const auto SAVEDUVBOTTOMRIGHT                   = g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight;
-    g_pHyprOpenGL->m_renderData.renderModif         = {};
-    g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft     = monitorSpaceBox.pos() / monitor->m_transformedSize;
-    g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight = (monitorSpaceBox.pos() + monitorSpaceBox.size()) / monitor->m_transformedSize;
+    g_pHyprRenderer->pushMonitorTransformEnabled(true);
+    const auto SAVEDRENDERMODIF                     = g_pHyprRenderer->m_renderData.renderModif;
+    const auto SAVEDUVTOPLEFT                       = g_pHyprRenderer->m_renderData.primarySurfaceUVTopLeft;
+    const auto SAVEDUVBOTTOMRIGHT                   = g_pHyprRenderer->m_renderData.primarySurfaceUVBottomRight;
+    g_pHyprRenderer->m_renderData.renderModif         = {};
+    g_pHyprRenderer->m_renderData.primarySurfaceUVTopLeft     = monitorSpaceBox.pos() / monitor->m_transformedSize;
+    g_pHyprRenderer->m_renderData.primarySurfaceUVBottomRight = (monitorSpaceBox.pos() + monitorSpaceBox.size()) / monitor->m_transformedSize;
     g_pHyprOpenGL->renderTexture(BLURREDTEXTURE, windowBox, renderData);
-    g_pHyprOpenGL->m_renderData.primarySurfaceUVTopLeft     = SAVEDUVTOPLEFT;
-    g_pHyprOpenGL->m_renderData.primarySurfaceUVBottomRight = SAVEDUVBOTTOMRIGHT;
-    g_pHyprOpenGL->m_renderData.renderModif                 = SAVEDRENDERMODIF;
-    g_pHyprOpenGL->popMonitorTransformEnabled();
+    g_pHyprRenderer->m_renderData.primarySurfaceUVTopLeft     = SAVEDUVTOPLEFT;
+    g_pHyprRenderer->m_renderData.primarySurfaceUVBottomRight = SAVEDUVBOTTOMRIGHT;
+    g_pHyprRenderer->m_renderData.renderModif                 = SAVEDRENDERMODIF;
+    g_pHyprRenderer->popMonitorTransformEnabled();
 }
 
 }

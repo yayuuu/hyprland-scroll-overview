@@ -13,6 +13,7 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/shared/animation/AnimationTree.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/managers/animation/AnimationManager.hpp>
 #include <hyprland/src/managers/animation/DesktopAnimationManager.hpp>
@@ -37,7 +38,7 @@
 #include <hyprland/src/helpers/math/Math.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/plugins/PluginSystem.hpp>
-#include <hyprland/src/config/ConfigDataValues.hpp>
+#include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/Pass.hpp>
 #include <hyprland/src/render/pass/PreBlurElement.hpp>
@@ -51,6 +52,11 @@
 #include "OverviewPassElement.hpp"
 #include "OverviewRender.hpp"
 #include "Window.hpp"
+#include "RendererAccess.hpp"
+
+using Render::GL::g_pHyprOpenGL;
+using Render::GL::CHyprOpenGLImpl;
+using Render::SRenderModifData;
 
 static void damageMonitor(WP<Hyprutils::Animation::CBaseAnimatedVariable> thisptr) {
     g_pScrollOverview->damage();
@@ -201,8 +207,9 @@ static bool windowHasOverviewAnimation(const PHLWINDOW& window) {
     if (!window)
         return false;
 
-    return window->m_realPosition->isBeingAnimated() || window->m_realSize->isBeingAnimated() || window->m_alpha->isBeingAnimated() ||
-        window->m_activeInactiveAlpha->isBeingAnimated() || window->m_movingFromWorkspaceAlpha->isBeingAnimated() || window->m_movingToWorkspaceAlpha->isBeingAnimated() ||
+    return window->m_realPosition->isBeingAnimated() || window->m_realSize->isBeingAnimated() || window->alpha(Desktop::View::WINDOW_ALPHA_FADE)->isBeingAnimated() ||
+        window->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->isBeingAnimated() || window->alpha(Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE)->isBeingAnimated() ||
+        window->alpha(Desktop::View::WINDOW_ALPHA_MOVE_TO_WORKSPACE)->isBeingAnimated() ||
         window->m_borderFadeAnimationProgress->isBeingAnimated() || window->m_borderAngleAnimationProgress->isBeingAnimated() || window->m_dimPercent->isBeingAnimated() ||
         window->m_realShadowColor->isBeingAnimated();
 }
@@ -214,9 +221,9 @@ static bool layerHasOverviewAnimation(const PHLLS& layer) {
     return layer->m_realPosition->isBeingAnimated() || layer->m_realSize->isBeingAnimated() || layer->m_alpha->isBeingAnimated();
 }
 
-static CCssGapData getOverviewWindowHitboxGap() {
-    static auto PGAPSIN = CConfigValue<Hyprlang::CUSTOMTYPE>("general:gaps_in");
-    return *sc<CCssGapData*>((PGAPSIN.ptr())->getData());
+static Config::CCssGapData getOverviewWindowHitboxGap() {
+    static auto PGAPSIN = CConfigValue<Config::IComplexConfigValue>("general:gaps_in");
+    return *sc<Config::CCssGapData*>(PGAPSIN.ptr());
 }
 
 static CBox getOverviewWindowBox(const PHLWINDOW& window, PHLMONITOR monitor, float scale, const Vector2D& viewOffset, float yoff) {
@@ -538,12 +545,12 @@ static SOverviewShadowConfig getOverviewShadowConfig() {
 
     static auto* const* PGLOBALRANGE       = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(SCROLLOVERVIEW_HANDLE, "decoration:shadow:range")->getDataStaticPtr();
     static auto* const* PGLOBALRENDERPOWER = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(SCROLLOVERVIEW_HANDLE, "decoration:shadow:render_power")->getDataStaticPtr();
-    static auto* const* PGLOBALIGNORE      = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(SCROLLOVERVIEW_HANDLE, "decoration:shadow:ignore_window")->getDataStaticPtr();
     static auto* const* PGLOBALCOLOR       = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(SCROLLOVERVIEW_HANDLE, "decoration:shadow:color")->getDataStaticPtr();
 
     const int range       = **PRANGE >= 0 ? **PRANGE : **PGLOBALRANGE;
     const int renderPower = **PRENDERPOWER >= 0 ? **PRENDERPOWER : **PGLOBALRENDERPOWER;
-    const int ignore      = **PIGNORE >= 0 ? **PIGNORE : **PGLOBALIGNORE;
+    // decoration:shadow:ignore_window was removed in Hyprland 0.55; it now defaults to enabled.
+    const int ignore      = **PIGNORE >= 0 ? **PIGNORE : 1;
     const auto color      = **PCOLOR >= 0 ? **PCOLOR : **PGLOBALCOLOR;
 
     return {
@@ -785,12 +792,12 @@ static void moveOverviewTargetNextToWindow(const SP<Layout::ITarget>& target, co
 }
 
 CScrollOverview::~CScrollOverview() {
-    g_pHyprRenderer->makeEGLCurrent();
+    g_pHyprOpenGL->makeEGLCurrent();
     if (realtimePreviewTimer) {
         wl_event_source_remove(realtimePreviewTimer);
         realtimePreviewTimer = nullptr;
     }
-    backdropBlurFB.release();
+    backdropBlurFB->release();
     const auto MONITOR = pMonitor.lock();
     const auto WORKSPACE = MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{};
     emitFullscreenVisibilityState(getOverviewFullscreenVisibilityWindow(WORKSPACE, Desktop::focusState()->window()), false);
@@ -800,7 +807,8 @@ CScrollOverview::~CScrollOverview() {
     restoreForcedLayerVisibility();
     images.clear(); // otherwise we get a vram leak
     Cursor::overrideController->unsetOverride(Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
-    g_pHyprOpenGL->markBlurDirtyForMonitor(pMonitor.lock());
+    if (const auto MON = pMonitor.lock())
+        MON->m_blurFBDirty = true;
 }
 
 CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_) : startedOn(startedOn_), swipe(swipe_) {
@@ -811,7 +819,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_) : started
     realtimePreviewTimer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, realtimePreviewTimerCallback, this);
     scheduleMinimumPreviewFrame();
 
-    const auto WINDOWSMOVECONFIG = g_pConfigManager->getAnimationPropertyConfig("windowsMove");
+    const auto WINDOWSMOVECONFIG = Config::animationTree()->getAnimationPropertyConfig("windowsMove");
     const auto WINDOWSMOVEVALUES = WINDOWSMOVECONFIG && WINDOWSMOVECONFIG->pValues ? WINDOWSMOVECONFIG->pValues.lock() : WINDOWSMOVECONFIG;
     if (!g_pAnimationManager->bezierExists(OVERVIEW_INSERT_FADE_BEZIER))
         g_pAnimationManager->addBezierWithName(OVERVIEW_INSERT_FADE_BEZIER, Vector2D{0.5, 0.0}, Vector2D{0.5, 0.0});
@@ -1179,7 +1187,7 @@ static void renderOverviewLayerLevel(PHLMONITOR monitor, uint32_t layer, const C
             LAYER->m_alpha->setValueAndWarp(previousAlpha * std::clamp(alpha, 0.F, 1.F));
         }
 
-        g_pHyprRenderer->renderLayer(LAYER, monitor, now);
+        ScrollOverview::RendererAccess::renderLayer(LAYER, monitor, now);
 
         if (MODULATEALPHA && LAYER->m_alpha)
             LAYER->m_alpha->setValueAndWarp(previousAlpha);
@@ -1200,13 +1208,13 @@ void CScrollOverview::renderGlobalWallpaper(PHLMONITOR monitor, const Time::stea
     if (!monitor)
         return;
 
-    g_pHyprRenderer->renderBackground(monitor);
+    ScrollOverview::RendererAccess::renderBackground(monitor);
 
     for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
         if (!Desktop::View::validMapped(ls.lock()))
             continue;
 
-        g_pHyprRenderer->renderLayer(ls.lock(), monitor, now);
+        ScrollOverview::RendererAccess::renderLayer(ls.lock(), monitor, now);
     }
 }
 
@@ -1220,25 +1228,25 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
     }
 
     const auto FBFORMAT = getOverviewFramebufferFormat(monitor);
-    if (!backdropBlurFB.isAllocated() || backdropBlurFB.m_size != monitor->m_pixelSize || backdropBlurFB.m_drmFormat != FBFORMAT) {
-        backdropBlurFB.release();
-        backdropBlurFB.alloc(monitor->m_pixelSize.x, monitor->m_pixelSize.y, FBFORMAT);
+    if (!backdropBlurFB->isAllocated() || backdropBlurFB->m_size != monitor->m_pixelSize || backdropBlurFB->m_drmFormat != FBFORMAT) {
+        backdropBlurFB->release();
+        backdropBlurFB->alloc(monitor->m_pixelSize.x, monitor->m_pixelSize.y, FBFORMAT);
         backdropBlurDirty = true;
     }
 
     if (!backdropBlurDirty)
         return;
 
-    auto* const SAVEDFB = g_pHyprOpenGL->m_renderData.currentFB;
-    backdropBlurFB.bind();
-    g_pHyprOpenGL->m_renderData.currentFB = &backdropBlurFB;
+    const auto SAVEDFB = g_pHyprRenderer->m_renderData.currentFB;
+    backdropBlurFB->bind();
+    g_pHyprRenderer->m_renderData.currentFB = backdropBlurFB;
     auto restoreFB = Hyprutils::Utils::CScopeGuard([SAVEDFB] {
         if (SAVEDFB)
             SAVEDFB->bind();
 
-        g_pHyprOpenGL->m_renderData.currentFB = SAVEDFB;
+        g_pHyprRenderer->m_renderData.currentFB = SAVEDFB;
     });
-    g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
+    g_pHyprRenderer->draw(CClearPassElement::SClearData{.color = CHyprColor{0.F, 0.F, 0.F, 1.F}});
 
     renderGlobalWallpaper(monitor, now);
 
@@ -1249,11 +1257,11 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
 }
 
 void CScrollOverview::renderBackdropBlurCache(PHLMONITOR monitor) {
-    if (!monitor || !backdropBlurFB.isAllocated() || !backdropBlurFB.getTexture())
+    if (!monitor || !backdropBlurFB->isAllocated() || !backdropBlurFB->getTexture())
         return;
 
     CRegion fullDamage{CBox{{}, monitor->m_transformedSize}};
-    const auto TEX = backdropBlurFB.getTexture();
+    const auto TEX = backdropBlurFB->getTexture();
     const auto SAVEDTRANSFORM = TEX->m_transform;
     TEX->m_transform = Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform));
     auto restoreTransform = Hyprutils::Utils::CScopeGuard([TEX, SAVEDTRANSFORM] { TEX->m_transform = SAVEDTRANSFORM; });
@@ -3313,7 +3321,7 @@ void CScrollOverview::render() {
     } else if (WALLPAPERMODE == 0 || WALLPAPERMODE == 2) {
         renderGlobalWallpaper(MONITOR, NOW);
     } else
-        g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 1.F});
+        g_pHyprRenderer->draw(CClearPassElement::SClearData{.color = CHyprColor{0.F, 0.F, 0.F, 1.F}});
 
     Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
 
@@ -3356,7 +3364,7 @@ void CScrollOverview::render() {
         if (!Desktop::View::validMapped(ls.lock()))
             continue;
 
-        g_pHyprRenderer->renderLayer(ls.lock(), MONITOR, NOW);
+        ScrollOverview::RendererAccess::renderLayer(ls.lock(), MONITOR, NOW);
     }
 
     sendOverviewFrameCallbacks(NOW);
