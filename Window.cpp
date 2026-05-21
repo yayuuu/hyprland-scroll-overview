@@ -216,6 +216,32 @@ static void roundStandaloneWindowPassElements(const PHLWINDOW& window, PHLMONITO
     }
 }
 
+// Hyprland 0.55's drawSurface() scissors each surface to its un-modified texture
+// box. Overview thumbnails are positioned by a SCALE+TRANSLATE renderModif that
+// only moves the texture geometry, so without an explicit clipBox the scissor
+// stays anchored at the monitor's top-left corner and clips the thumbnail away.
+// Setting clipBox routes renderTextureInternal through its clip branch, which
+// scissors to the full monitor instead — restoring the pre-0.55 behaviour.
+static void clipStandaloneWindowSurfaces(PHLMONITOR monitor, size_t firstElement) {
+    if (!monitor)
+        return;
+
+    const CBox clipBox = {{}, monitor->m_transformedSize};
+
+    auto& passElements = g_pHyprRenderer->m_renderPass.m_passElements;
+    for (size_t i = firstElement; i < passElements.size(); ++i) {
+        const auto& passElement = passElements[i];
+        if (!passElement || !passElement->element)
+            continue;
+
+        auto* surfacePassElement = dynamic_cast<CSurfacePassElement*>(passElement->element.get());
+        if (!surfacePassElement)
+            continue;
+
+        surfacePassElement->m_data.clipBox = clipBox;
+    }
+}
+
 static bool isOverviewHyprbarDecoration(IHyprWindowDecoration* decoration) {
     return decoration && decoration->getDecorationType() == DECORATION_CUSTOM && decoration->getDisplayName() == "Hyprbar";
 }
@@ -744,6 +770,7 @@ void renderOverviewWindow(const SRenderParams& params) {
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = modif}));
     const auto firstWindowPassElement = g_pHyprRenderer->m_renderPass.m_passElements.size();
     ScrollOverview::RendererAccess::renderWindow(params.window, params.monitor, params.now, true, RENDER_PASS_ALL, true, true);
+    clipStandaloneWindowSurfaces(params.monitor, firstWindowPassElement);
     if (!fullscreen)
         roundStandaloneWindowPassElements(params.window, params.monitor, params.renderScale, firstWindowPassElement);
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = SRenderModifData{}}));
