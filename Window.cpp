@@ -14,7 +14,6 @@
 #include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/view/Popup.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
-#include <hyprland/src/managers/EventManager.hpp>
 #include <hyprland/src/plugins/PluginSystem.hpp>
 #include <hyprland/src/render/pass/Pass.hpp>
 #include <hyprland/src/render/pass/RectPassElement.hpp>

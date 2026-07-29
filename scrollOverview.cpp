@@ -23,7 +23,7 @@
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/animation/AnimationManager.hpp>
-#include <hyprland/src/managers/EventManager.hpp>
+#include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
@@ -3913,16 +3913,14 @@ void CScrollOverview::emitFullscreenVisibilityState(PHLWINDOW window, bool hideF
     window = getOverviewWindowToShow(window);
 
     if (!validMapped(window) || !window->m_workspace || window->m_monitor != pMonitor) {
-        if (g_pEventManager)
-            g_pEventManager->postEvent(SHyprIPCEvent{.event = "fullscreen", .data = "0"});
+        IPC::Socket2::sock()->postEvent(IPC::Socket2::SEvent{.event = "fullscreen", .data = "0"});
         return;
     }
 
     if (!hideFullscreen || !Fullscreen::controller()->isFullscreen(window)) {
         Event::bus()->m_events.window.fullscreen.emit(window);
 
-        if (g_pEventManager)
-            g_pEventManager->postEvent(SHyprIPCEvent{.event = "fullscreen", .data = Fullscreen::controller()->isFullscreen(window) ? "1" : "0"});
+        IPC::Socket2::sock()->postEvent(IPC::Socket2::SEvent{.event = "fullscreen", .data = Fullscreen::controller()->isFullscreen(window) ? "1" : "0"});
 
         return;
     }
@@ -3933,8 +3931,7 @@ void CScrollOverview::emitFullscreenVisibilityState(PHLWINDOW window, bool hideF
 
     Event::bus()->m_events.window.fullscreen.emit(window);
 
-    if (g_pEventManager)
-        g_pEventManager->postEvent(SHyprIPCEvent{.event = "fullscreen", .data = "0"});
+    IPC::Socket2::sock()->postEvent(IPC::Socket2::SEvent{.event = "fullscreen", .data = "0"});
 
     Fullscreen::controller()->setFullscreenMode(window, SAVEDMODES.internal, SAVEDMODES.client);
 }
