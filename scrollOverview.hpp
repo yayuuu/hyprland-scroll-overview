@@ -85,6 +85,7 @@ class CScrollOverview : public IOverview {
     void                        updateInsertSlot();
     void                        clearInsertSlot();
     PHLWORKSPACE                createInsertSlotWorkspace();
+    void                        reapEmptiedWorkspace(const PHLWORKSPACE& workspace, const PHLWORKSPACE& followTo = nullptr);
     void                        updateDragAutoScroll();
     void                        stopDragAutoScroll();
     static int                  dragAutoScrollTimerCallback(void* data);
@@ -102,8 +103,10 @@ class CScrollOverview : public IOverview {
     CBox   workspaceOverviewVisibleBox(size_t workspaceIdx, const CBox& workspaceBox, float renderScale, PHLMONITOR monitor) const;
     // configured scale, shrunk so every card fits on screen when there are many workspaces
     float      targetScale() const;
-    float      workspaceOverviewOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const;
-    float      workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const;
+    // withInsertSpread = false gives the card positions as if no insert slot were open: the hit
+    // test must not move with the animation it drives, or a card slides out from under the cursor
+    float      workspaceOverviewOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch, bool withInsertSpread = true) const;
+    float      workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch, bool withInsertSpread = true) const;
     float      workspaceOverviewAlpha(size_t workspaceIdx) const;
     PHLWINDOW windowAtOverviewPoint(const Vector2D& point, size_t* workspaceIdx = nullptr) const;
     PHLWINDOW windowAtOverviewCursor(size_t* workspaceIdx = nullptr);
@@ -281,6 +284,9 @@ class CScrollOverview : public IOverview {
     // insertSlotSpread animates the neighbouring cards apart to reveal a full-size empty slot.
     std::optional<size_t>            insertSlot;
     bool                             insertSlotBlocked = false; // slot has no free workspace id
+    // a window changed workspace; check next frame whether that left a workspace empty
+    bool                             sweepEmptiedPending = false;
+    PHLWINDOWREF                     sweepFollowWindow;
     PHLANIMVAR<float>                insertSlotSpread;
     wl_event_source*                 dragAutoScrollTimer = nullptr;
     bool                             dragAutoScrollArmed = false;

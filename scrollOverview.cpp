@@ -1506,9 +1506,15 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         damage();
     };
 
-    auto onWindowMove = [this](PHLWINDOW, PHLWORKSPACE) {
+    auto onWindowMove = [this](PHLWINDOW window, PHLWORKSPACE) {
         if (closing)
             return;
+
+        // This fires BEFORE the window's workspace pointer is updated -- checked by observing the
+        // source still reporting one window here -- and the event's own workspace argument is not
+        // documented as old-or-new. So just note that something moved and sweep next frame.
+        sweepEmptiedPending = true;
+        sweepFollowWindow   = window;
 
         rebuildPending = true;
         damage();
@@ -1799,7 +1805,7 @@ bool CScrollOverview::isSelectedWorkspace(const PHLWORKSPACE& workspace) const {
         images[viewportCurrentWorkspace]->pWorkspace == workspace;
 }
 
-float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const {
+float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch, bool withInsertSpread) const {
     const auto MONITOR             = pMonitor.lock();
     const auto MONITORSCALE        = MONITOR ? std::max(MONITOR->m_scale, 0.01F) : 1.F;
     const auto MONITORSIZE         = MONITOR ? axisSize(MONITOR->m_size, layout) : 0.F;
@@ -1808,7 +1814,7 @@ float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activ
         std::max(scale->value(), 0.01F);
     const auto LOGICALPITCH        = MONITOR ? getWorkspaceLogicalPitch(MONITOR, RENDERSCALE, layout) : workspacePitch / std::max(RENDERSCALE * MONITORSCALE, 0.01F);
     const auto RENDEREDLOGICALUNIT = RENDERSCALE * MONITORSCALE;
-    const auto DEFAULTOFFSET       = workspaceOverviewLogicalOffset(workspaceIdx, activeIdx, LOGICALPITCH) * RENDEREDLOGICALUNIT;
+    const auto DEFAULTOFFSET       = workspaceOverviewLogicalOffset(workspaceIdx, activeIdx, LOGICALPITCH, withInsertSpread) * RENDEREDLOGICALUNIT;
 
     if (!workspaceInsertTransition.active || workspaceIdx >= images.size() || !images[workspaceIdx] || !images[workspaceIdx]->pWorkspace)
         return DEFAULTOFFSET;
@@ -1870,7 +1876,7 @@ float CScrollOverview::targetScale() const {
     return std::clamp(sc<float>(std::min<double>(CONFIGSCALE, FIT)), FLOOR, CONFIGSCALE);
 }
 
-float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const {
+float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch, bool withInsertSpread) const {
     const auto EXTRAINTERVAL = [this](size_t workspaceIdx_) -> float {
         if (workspaceIdx_ + 1 >= images.size() || !images[workspaceIdx_] || !images[workspaceIdx_ + 1])
             return 0.F;
@@ -1891,7 +1897,7 @@ float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_
             offset -= workspacePitch + EXTRAINTERVAL(i);
     }
 
-    return offset + insertSlotSpreadOffset(workspaceIdx, workspacePitch);
+    return offset + (withInsertSpread ? insertSlotSpreadOffset(workspaceIdx, workspacePitch) : 0.F);
 }
 
 // Cards on either side of the hovered slot move apart by half a pitch each, so a full
@@ -2803,8 +2809,11 @@ std::optional<size_t> CScrollOverview::insertSlotAtOverviewPoint(const Vector2D&
     const size_t ACTIVEIDX = activeWorkspaceIndex();
     const double AXIS      = axisValue(point, layout);
 
+    // Unspread positions on purpose: hit-testing the spread layout means the card you are aiming
+    // at slides half a pitch away the moment the slot opens, and a drag heading for a card gets
+    // captured by the slot instead. The spread stays purely visual.
     const auto boxFor = [&](size_t idx) {
-        return getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), workspaceOverviewOffset(idx, ACTIVEIDX, PITCH), layout);
+        return getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), workspaceOverviewOffset(idx, ACTIVEIDX, PITCH, false), layout);
     };
 
     // require the pointer to be roughly at card height (or width, when vertical) so that
@@ -2948,6 +2957,39 @@ PHLWORKSPACE CScrollOverview::createInsertSlotWorkspace() {
 // Holding a dragged window near either end of the screen scrolls the carousel, so the first
 // and last slots stay reachable no matter which card the drag started on. A timer drives it
 // because a finger parked at the edge stops producing motion events.
+// A workspace emptied while the overview is open cannot be reaped by Hyprland, because
+// SWorkspaceImage holds a STRONG PHLWORKSPACE and the render path forces m_visible -- so it
+// lingers as an empty card until the overview closes. Drop it from the carousel, which releases
+// the last reference and lets the row close up, the way it does outside the overview.
+void CScrollOverview::reapEmptiedWorkspace(const PHLWORKSPACE& workspace, const PHLWORKSPACE& followTo) {
+    const auto MONITOR = pMonitor.lock();
+    if (!valid(workspace) || !MONITOR)
+        return;
+
+    if (workspace->m_isSpecialWorkspace || workspace->isPersistent() || workspace->getWindowCount() != 0)
+        return;
+
+    if (workspace == MONITOR->m_activeSpecialWorkspace)
+        return;
+
+    // Moving the last window off the workspace you are standing on has to collapse it too --
+    // otherwise the card you just emptied is the one left staring at you. Follow the window to
+    // wherever it went, which is also where you want to be looking.
+    if (workspace == MONITOR->m_activeWorkspace) {
+        if (!valid(followTo) || followTo == workspace)
+            return;
+
+        MONITOR->changeWorkspace(followTo, false, true, true);
+
+        if (MONITOR->m_activeWorkspace == workspace)
+            return;
+    }
+
+    pendingRemovedWorkspace = workspace;
+    rebuildPending          = true;
+    damage();
+}
+
 void CScrollOverview::updateDragAutoScroll() {
     const auto MONITOR = pMonitor.lock();
     if (!dragActiveWindow || closing || !MONITOR) {
@@ -3392,13 +3434,24 @@ void CScrollOverview::endWindowDrag() {
     const auto ACTIVEWORKSPACEBEFOREDROP = MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{};
     const auto DROPACTIVEWORKSPACEBEFOREDROP = DROPMONITOR ? DROPMONITOR->m_activeWorkspace : PHLWORKSPACE{};
     const auto RESTOREACTIVEWORKSPACE = [&]() {
+        // A workspace the drop just created has never been active, and a never-activated workspace
+        // renders none of its windows -- the new card came up blank while `hyprctl` insisted the
+        // window was on it, mapped, with correct geometry. So follow the window into it instead of
+        // restoring the old active workspace; this also stops the emptied source from staying
+        // active, which is what let it linger as an empty card.
+        if (INSERTEDNEWWORKSPACE) {
+            if (DROPMONITOR && DROPWORKSPACE && DROPMONITOR->m_activeWorkspace != DROPWORKSPACE)
+                DROPMONITOR->changeWorkspace(DROPWORKSPACE, false, true, true);
+            return;
+        }
+
         if (MONITOR && ACTIVEWORKSPACEBEFOREDROP && MONITOR->m_activeWorkspace != ACTIVEWORKSPACEBEFOREDROP)
             MONITOR->changeWorkspace(ACTIVEWORKSPACEBEFOREDROP, false, true, true);
         if (DROPMONITOR && DROPMONITOR != MONITOR && DROPACTIVEWORKSPACEBEFOREDROP && DROPMONITOR->m_activeWorkspace != DROPACTIVEWORKSPACEBEFOREDROP)
             DROPMONITOR->changeWorkspace(DROPACTIVEWORKSPACEBEFOREDROP, false, true, true);
     };
     const auto RESTOREVIEWPORTWORKSPACE = [&]() {
-        if (!ACTIVEWORKSPACEBEFOREDROP)
+        if (!ACTIVEWORKSPACEBEFOREDROP || INSERTEDNEWWORKSPACE)
             return;
 
         for (size_t i = 0; i < images.size(); ++i) {
@@ -3544,6 +3597,14 @@ void CScrollOverview::endWindowDrag() {
     clearDragPending();
     if (dropOverview && dropOverview != this)
         dropOverview->clearInsertSlot();
+
+    // dragging the last window off a workspace should collapse it, not leave an empty card behind
+    if (MOVEWORKSPACE && ORIGINALWORKSPACE) {
+        reapEmptiedWorkspace(ORIGINALWORKSPACE, DROPWORKSPACE);
+        if (dropOverview && dropOverview != this)
+            dropOverview->reapEmptiedWorkspace(ORIGINALWORKSPACE, DROPWORKSPACE);
+    }
+
     rebuildPending = true;
     damage();
     if (dropOverview != this) {
@@ -5355,6 +5416,21 @@ void CScrollOverview::onPreRender() {
     }
 
     focusSyncedFromWorkspaceID = WORKSPACE_INVALID;
+
+    // A window moved last frame: collapse whatever it left empty. Deliberately only after a move,
+    // never on a plain frame -- an empty ACTIVE workspace is legitimate when you just opened the
+    // overview on one or made one with SUPER+N, and sweeping unconditionally would yank it away.
+    if (sweepEmptiedPending) {
+        sweepEmptiedPending  = false;
+        const auto MOVEDWINDOW = sweepFollowWindow.lock();
+        const auto DESTINATION = MOVEDWINDOW ? MOVEDWINDOW->m_workspace : PHLWORKSPACE{};
+        sweepFollowWindow.reset();
+
+        for (const auto& image : images) {
+            if (image && image->pWorkspace && image->pWorkspace != DESTINATION)
+                reapEmptiedWorkspace(image->pWorkspace, DESTINATION);
+        }
+    }
 
     if (rebuildPending) {
         rebuildPending = false;
