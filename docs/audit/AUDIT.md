@@ -155,3 +155,54 @@ workspaces this puts 5 on screen at once instead of 2.6.
 Note the count comes from the workspace registry, not `images` — the first cut read `images`,
 which is still empty while the overview is being constructed, so the fit silently never applied
 on open.
+
+---
+
+## F8 — A workspace created by a drop renders blank ✓ FIXED (fork) — severity A
+
+Drop a window into an insert slot: the new card appears in the right place and stays **empty**,
+while `hyprctl` reports the window on that workspace, `mapped: true`, `at [7,7]`, correct size,
+monitor eDP-1 — i.e. the state is perfect and only the render is wrong.
+
+Cause: **a workspace that has never been active does not render its windows.** Activating the
+new workspace once and reopening the overview showed the window immediately. `endWindowDrag()`
+calls `RESTOREACTIVEWORKSPACE()`, so a workspace the drop had just created was never activated.
+
+Fixed: for a drop that created the workspace, follow the window into it instead of restoring the
+previous active workspace — which is also where the user is looking, and matches what the
+keyboard `ws-index.sh insert` path (`follow = true`) already did. That path was reported as
+working, which was the clue.
+
+---
+
+## F9 — An emptied workspace does not collapse ✓ FIXED (fork) — severity A
+
+Move the only window off a workspace while the overview is open and its empty card stays in the
+row. Outside the overview that workspace would be destroyed at once.
+
+Cause: `SWorkspaceImage` holds a **strong** `PHLWORKSPACE`, and the render path forces
+`m_visible = true`, so Hyprland cannot reap it. Proof: the workspace vanished the instant the
+overview was closed.
+
+Fixed: `reapEmptiedWorkspace()` drops it from the carousel, which releases the last reference.
+Three details that each cost a test round:
+
+- When the emptied workspace is the **active** one — the common case, since you drag off the card
+  you are looking at — focus follows the window out first, otherwise the card you just emptied is
+  the one left in front of you.
+- The sweep runs **one frame after** `window.moveToWorkspace`, not in the handler: the event fires
+  before the window's workspace pointer is updated, so the source still reports a window.
+- It runs **only after a move**, never on a plain frame: an empty active workspace is legitimate
+  right after opening the overview on one, or after `SUPER+N`. Both verified to survive.
+
+---
+
+## F10 — The insert slot stole drops aimed at a card ✓ FIXED (fork) — severity B
+
+Regression from the insert work. Dragging toward the centre of a neighbouring card created a new
+workspace instead: travelling through the gap opened the slot, the spread shifted that card half
+a pitch (304 px) out from under the cursor, and the cursor was then inside the open slot.
+
+Fixed: `insertSlotAtOverviewPoint()` hit-tests the **unspread** layout
+(`workspaceOverviewOffset(..., withInsertSpread = false)`). The spread is purely visual, so the
+geometry the pointer is tested against cannot move as a result of the pointer's own position.
