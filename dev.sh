@@ -28,15 +28,26 @@ case "${1:-test}" in
 
   test|load|reload)
     build || { echo "build failed -- not loading"; exit 1; }
-    unload_both; sleep 0.3
+    # The version string is git-hash+dirty, so it does NOT change between dirty builds: the only
+    # proof a reload happened is the plugin HANDLE changing. Without this check dev.sh happily
+    # reported success while the previous build stayed live, and hours went into "fixing" code that
+    # was never running.
+    before=$(hyprctl plugin list | awk '/scrolloverview/{f=1} f&&/Handle:/{print $2; exit}')
+    unload_both
     hyprctl plugin load "$DEV_SO" || { echo "load failed"; exit 1; }
     hyprctl reload >/dev/null 2>&1
-    echo "FORK loaded. 4-finger up opens the overview, 4-finger horizontal navigates it."
-    hyprctl plugin list | grep -A2 scrolloverview
+    after=$(hyprctl plugin list | awk '/scrolloverview/{f=1} f&&/Handle:/{print $2; exit}')
+    if [ -z "$after" ]; then
+      echo "ERROR: plugin is not loaded after load -- check the Hyprland log"; exit 1
+    fi
+    if [ -n "$before" ] && [ "$before" = "$after" ]; then
+      echo "ERROR: handle unchanged ($after) -- the OLD build is still live, your changes are NOT running"; exit 1
+    fi
+    echo "FORK loaded (handle $after). 4-finger up opens the overview, 4-finger horizontal navigates it."
     ;;
 
   restore)
-    unload_both; sleep 0.3
+    unload_both
     hyprctl plugin load "$STOCK_SO" || { echo "load failed"; exit 1; }
     hyprctl reload >/dev/null 2>&1
     echo "hyprpm build restored."

@@ -206,3 +206,44 @@ a pitch (304 px) out from under the cursor, and the cursor was then inside the o
 Fixed: `insertSlotAtOverviewPoint()` hit-tests the **unspread** layout
 (`workspaceOverviewOffset(..., withInsertSpread = false)`). The spread is purely visual, so the
 geometry the pointer is tested against cannot move as a result of the pointer's own position.
+
+---
+
+## F11 — dev.sh reported success while the OLD build stayed live ✓ FIXED — process, not code
+
+`dev.sh test` unloads and loads the plugin, then printed the version string — which is
+`<git-hash>-dirty` and therefore **identical across dirty builds**. The only proof a reload
+happened is the plugin **handle** changing. It was not: `hyprctl plugin list` showed the same
+handle before and after, so several rounds of "the cascade does not work" were measured against a
+plugin that did not contain the cascade.
+
+Root cause: `sleep 0.3` between unload and load. `sleep` is unavailable in the environment the
+script was being driven from, and the script continued past it in a state where the load became a
+no-op. Fixed by dropping the sleeps and by comparing the handle before/after, failing loudly:
+
+    ERROR: handle unchanged (5...) -- the OLD build is still live, your changes are NOT running
+
+Lesson for this fork: a version string derived from the git hash cannot detect a reload of
+uncommitted work. Check the handle.
+
+---
+
+## F12 — Inserting into a gap runs out of numbers ✓ ADDRESSED (spacing), cascade REVERTED
+
+Hyprland orders workspaces by id, every insert takes the midpoint of a gap, so each insert into the
+same gap halves what is left. With a step of 10 that gave about three inserts before the gap was
+full and the insert refused — which is not dynamic ordering, it is a countdown, and it is what the
+user hit.
+
+Attempted fix, **reverted**: shift the following workspaces up by one to make room. Moving the
+windows is straightforward, but the vacated workspace OBJECT keeps its id, and while it is active it
+cannot be reaped, so the number never frees. Working around that (move focus off it, drop it from
+the carousel, rebuild synchronously, then create the wanted id) still produced the wrong outcome:
+the dragged window landed on the shifted id with no workspace inserted. Removed rather than left in
+— code that runs and gets the wrong answer is worse than no code.
+
+Shipped instead: allocate on a step of **1000** (`ws-index.sh` and the plugin's end-inserts), which
+gives ~10 nested inserts per gap by bisection, and `ws-index.sh respace` re-flattens the row onto
+1000, 2000, 3000 … whenever it gets tight. Verified: repeated drag-inserts into one gap
+(5000|6000 → 5500 → 5750), and the whole row respaced from 1, 10, 25, 60 to 1000, 2000, 3000, 4000
+with window order preserved.

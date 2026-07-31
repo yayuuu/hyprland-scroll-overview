@@ -1565,6 +1565,12 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         if (closing)
             return;
 
+        // forceWorkspaceAlphaVisible() runs once, when the overview opens. A workspace created
+        // AFTER that keeps m_alpha = 0, so its windows render at zero alpha -- which is why the
+        // card for a workspace made by a drop came up blank while its window was demonstrably on
+        // it, mapped and correctly placed. Re-apply whenever the set of workspaces changes.
+        forceWorkspaceAlphaVisible();
+
         rebuildPending = true;
         damage();
     };
@@ -2854,7 +2860,7 @@ std::optional<size_t> CScrollOverview::insertSlotAtOverviewPoint(const Vector2D&
 // windows). New workspaces at either end are spaced out by INSERT_ID_STEP so that later
 // inserts next to them do have room.
 std::optional<WORKSPACEID> CScrollOverview::insertSlotWorkspaceID(size_t slot) const {
-    static constexpr WORKSPACEID INSERT_ID_STEP = 10;
+    static constexpr WORKSPACEID INSERT_ID_STEP = 1000;
 
     if (images.empty() || slot > images.size())
         return std::nullopt;
@@ -2950,7 +2956,15 @@ PHLWORKSPACE CScrollOverview::createInsertSlotWorkspace() {
     if (!ID)
         return nullptr;
 
-    return State::workspaceState()->create(*ID, MONITOR->m_id, std::to_string(*ID), true);
+    const auto WORKSPACE = State::workspaceState()->create(*ID, MONITOR->m_id, std::to_string(*ID), true);
+
+    // don't wait for the created event: this workspace is about to be rendered this frame
+    if (WORKSPACE && WORKSPACE->m_alpha) {
+        WORKSPACE->m_alpha->setValueAndWarp(1.F);
+        *WORKSPACE->m_alpha = 1.F;
+    }
+
+    return WORKSPACE;
 }
 
 // ── drag auto-scroll ──────────────────────────────────────────────────────────────────
