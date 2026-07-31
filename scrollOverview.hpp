@@ -283,6 +283,22 @@ class CScrollOverview : public IOverview {
     // drag-to-insert slot: index in [0, images.size()], meaning "insert before images[slot]".
     // insertSlotSpread animates the neighbouring cards apart to reveal a full-size empty slot.
     std::optional<size_t>            insertSlot;
+    // INVARIANT: pointer-facing geometry must never include an animation the pointer itself drives.
+    // The insert-slot spread broke this -- the card you were aiming at slid half a pitch away the
+    // moment the slot opened, so drops aimed at a card were captured by the slot on one side only.
+    // Enforced as a scope rather than a flag threaded through ~30 call sites, because threading it
+    // per call site is exactly how the two hit-tests drifted apart in the first place.
+    mutable bool                     hitTestingGeometry = false;
+    struct SHitTestScope {
+        SHitTestScope(const CScrollOverview* overview) : m_overview(overview), m_previous(overview->hitTestingGeometry) {
+            overview->hitTestingGeometry = true;
+        }
+        ~SHitTestScope() {
+            m_overview->hitTestingGeometry = m_previous;
+        }
+        const CScrollOverview* m_overview = nullptr;
+        bool                   m_previous = false;
+    };
     bool                             insertSlotBlocked = false; // slot has no free workspace id
     // a window changed workspace; check next frame whether that left a workspace empty
     bool                             sweepEmptiedPending = false;

@@ -341,3 +341,54 @@ animated variable plus keeping the drag preview alive past button release. Not b
 Measurement technique for next time: `grim` frames at 40/80/120/200/600 ms after release, compared
 with `magick compare -metric RMSE`. A running animation shows non-trivial differences across the
 first few; a warp shows one jump then zeros.
+
+---
+
+## Root-cause work, 2026-08-01: invariant enforced, drop animation still unsolved
+
+### Done: pointer-facing geometry is settled geometry (root fix for the F13 class)
+
+F13 (insert working on one side of a card only) was patched by giving the open slot priority over a
+card hit. The root cause was that two hit-tests computed card geometry with *different* parameters —
+one including the insert spread, one not — and the spread is driven by the pointer itself.
+
+Now enforced as a mechanism rather than a per-call-site flag: `SHitTestScope` sets
+`hitTestingGeometry` for the duration of a hit test, and `insertSlotSpreadOffset()` returns 0 while
+it is set. Applied at all nine pointer-facing entry points (`insertSlotAtOverviewPoint`,
+`workspaceAtOverviewPoint`, `workspaceAtOverviewDropPoint`, `windowAtOverviewPoint`,
+`windowAtOverviewCursorOnWorkspace`, `dropAnchorAtOverviewCursorOnWorkspace`, `draggedWindowBox`,
+`draggedWindowBoxFor`, `draggedWindowGlobalBox`). Threading a bool through ~30 call sites is exactly
+how the two hit-tests drifted apart in the first place; a scope cannot be half-applied.
+
+**Invariant, stated for the future: geometry the pointer is tested against may not move as a result
+of where the pointer is.** That covers the spread, the adaptive-scale re-fit mid-drag, and anything
+of the same shape added later.
+
+### Not done: the drop transition. Four attempts, all measured, all negative
+
+1. Seed the window's position from the drag box *before* the move — erased, because Hyprland warps a
+   window when it changes workspace.
+2. Set `windowsMove` explicitly (it was reported as speed 0.0 and was not inheriting from `windows`) —
+   necessary, not sufficient.
+3. Drive the window's own animated variables *after* the move (`m_realPosition`/`m_realSize`:
+   `setValueAndWarp()` to the hand box, then restore the goal). Measured: motion exists but is
+   invisible, because the card maps the window's global box into card space, so the travel happens
+   *inside* the destination card — a few dozen px.
+4. An overview-owned animation interpolating the preview from the hand box to the window's box in its
+   new card, with its own animation config so the duration was ours. Set to 1.5s to make sampling
+   trivial: everything was settled by ~300ms, i.e. it never drew. Removed rather than left in.
+
+Measurement method that made these conclusive (whole-screen RMSE is too blunt — a small moving window
+scores ~25 and duplicate captures score 0): compare each frame to the settled frame and take the
+bounding box of the changed region.
+
+    magick compare -metric AE frame.png settled.png -compose src miff:- \
+      | magick - -trim -format "%wx%h+%X+%Y" info:
+
+    t=100ms  1945x632+0+584   <- whole card band still differs
+    t=300ms   183x2+442+1169  <- only a text cursor: already settled
+
+**Blocker for attempt 5: no observability.** Plugin log output never reaches the Hyprland log in this
+session (`grep -c scrolloverview` on the log is 0, including the plugin's own load lines), so attempt
+4 could not be told apart from "the function is never called". Fix that first — a debug Hyprland log,
+or a dispatcher that reports plugin state on demand — then the drop animation is a short job.

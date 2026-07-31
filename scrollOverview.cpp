@@ -1912,7 +1912,9 @@ float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_
 // workspaceOverviewLogicalOffset(), so adding the term here keeps the visual slot and the
 // droppable region identical by construction.
 float CScrollOverview::insertSlotSpreadOffset(size_t workspaceIdx, float workspacePitch) const {
-    if (!insertSlot || !insertSlotSpread)
+    // see the SHitTestScope invariant: geometry the pointer is tested against may not move because
+    // of where the pointer is
+    if (hitTestingGeometry || !insertSlot || !insertSlotSpread)
         return 0.F;
 
     const float T = std::clamp(insertSlotSpread->value(), 0.F, 1.F);
@@ -2072,6 +2074,7 @@ CBox CScrollOverview::workspaceOverviewVisibleBox(size_t workspaceIdx, const CBo
 }
 
 PHLWINDOW CScrollOverview::windowAtOverviewPoint(const Vector2D& point, size_t* hoveredWorkspaceIdx) const {
+    const SHitTestScope HITTEST{this};
     size_t activeIdx = activeWorkspaceIndex();
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR)
@@ -2169,6 +2172,7 @@ PHLWINDOW CScrollOverview::windowClosestToWorkspaceCenter(size_t workspaceIdx) c
 }
 
 PHLWINDOW CScrollOverview::windowAtOverviewCursorOnWorkspace(size_t workspaceIdx, const PHLWINDOW& ignoredWindow, CBox* windowBox) const {
+    const SHitTestScope HITTEST{this};
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR || workspaceIdx >= images.size() || !images[workspaceIdx])
         return nullptr;
@@ -2219,6 +2223,7 @@ PHLWINDOW CScrollOverview::windowAtOverviewCursorOnWorkspace(size_t workspaceIdx
 
 CDropIndicator::SDropAnchor CScrollOverview::dropAnchorAtOverviewCursorOnWorkspace(size_t workspaceIdx, const PHLWINDOW& ignoredWindow,
                                                                                    CScrollOverview* dragContext) {
+    const SHitTestScope HITTEST{this};
     CDropIndicator::SDropAnchor result;
     const auto                  DRAGCONTEXT = dragContext ? dragContext : this;
 
@@ -2412,6 +2417,7 @@ CDropIndicator::SDropAnchor CScrollOverview::dropAnchorAtOverviewCursorOnWorkspa
 }
 
 PHLWORKSPACE CScrollOverview::workspaceAtOverviewPoint(const Vector2D& point, size_t* hoveredWorkspaceIdx) const {
+    const SHitTestScope HITTEST{this};
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR)
         return nullptr;
@@ -2437,6 +2443,7 @@ PHLWORKSPACE CScrollOverview::workspaceAtOverviewPoint(const Vector2D& point, si
 }
 
 PHLWORKSPACE CScrollOverview::workspaceAtOverviewDropPoint(const Vector2D& point, size_t* hoveredWorkspaceIdx, const PHLWINDOW& draggedWindow) const {
+    const SHitTestScope HITTEST{this};
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR)
         return nullptr;
@@ -2594,6 +2601,7 @@ Vector2D CScrollOverview::overviewPointToGlobal(size_t workspaceIdx, const Vecto
 }
 
 CBox CScrollOverview::draggedWindowBox(size_t workspaceIdx) const {
+    const SHitTestScope HITTEST{this};
     const auto WINDOW  = getOverviewWindowToShow(dragActiveWindow.lock());
     const auto MONITOR = pMonitor.lock();
     if (!WINDOW || !MONITOR || workspaceIdx >= images.size())
@@ -2608,6 +2616,7 @@ CBox CScrollOverview::draggedWindowBox(size_t workspaceIdx) const {
 }
 
 CBox CScrollOverview::draggedWindowBoxFor(PHLWINDOW window, size_t workspaceIdx, const Vector2D& pointLocal, const Vector2D& grabRatio) const {
+    const SHitTestScope HITTEST{this};
     window             = getOverviewWindowToShow(window);
     const auto MONITOR = pMonitor.lock();
     if (!window || !MONITOR || workspaceIdx >= images.size())
@@ -2621,6 +2630,7 @@ CBox CScrollOverview::draggedWindowBoxFor(PHLWINDOW window, size_t workspaceIdx,
 }
 
 CBox CScrollOverview::draggedWindowGlobalBox() const {
+    const SHitTestScope HITTEST{this};
     const auto WINDOW  = getOverviewWindowToShow(dragActiveWindow.lock());
     const auto MONITOR = pMonitor.lock();
     if (!WINDOW || !MONITOR)
@@ -2806,6 +2816,7 @@ void CScrollOverview::updateWindowDrag() {
 // images.size() means "after the last card". Returns nothing while the point is over a card,
 // which is the existing drop-onto-a-workspace case.
 std::optional<size_t> CScrollOverview::insertSlotAtOverviewPoint(const Vector2D& point) const {
+    const SHitTestScope HITTEST{this};
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR || images.empty())
         return std::nullopt;
@@ -3545,22 +3556,8 @@ void CScrollOverview::endWindowDrag() {
         }
     }
 
-    // Hand the animation over. The drag preview is drawn from a synthetic box (cursor position +
-    // card-scaled size) that has nothing to do with the window's own animated position, so at
-    // release the preview simply stopped being drawn while the real window was already at its
-    // destination -- the window appeared to teleport out of your hand. Seeding its position from the
-    // drag box gives the layout animation a start point, so it glides (and grows) into place.
-    const auto HANDOFFBOX = draggedWindowGlobalBox();
-    const auto SEEDHANDOFF = [&]() {
-        if (!TARGET || HANDOFFBOX.empty())
-            return;
-
-        TARGET->setPositionGlobal(HANDOFFBOX);
-        TARGET->warpPositionSize(); // establishes the start; the goal below is what animates
-    };
 
     if (RETILEONEND && MOVEWORKSPACE) {
-        SEEDHANDOFF();
         Desktop::globalWindowController()->moveWindowToWorkspace(WINDOW, DROPWORKSPACE);
 
         if (DROPSCROLLINGLAYOUT) {
@@ -3575,7 +3572,6 @@ void CScrollOverview::endWindowDrag() {
         TARGET->rememberFloatingSize(dragOriginalFloatSize);
         RESTOREVIEWPORTWORKSPACE();
     } else if (RETILEONEND) {
-        SEEDHANDOFF();
         TARGET->damageEntire();
 
         if (DROPANCHOR && !dropDirection.empty() && !DROPSCROLLINGLAYOUT && DROPANCHOR->layoutTarget()) {

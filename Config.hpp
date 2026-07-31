@@ -88,6 +88,7 @@ float         getScale();
 bool          getAdaptiveScale();
 float         getMinScale();
 bool          getCardPlate();
+float         getDropAnimationSpeed();
 int           getWorkspaceGap();
 ELayout       getLayout();
 int           getScrollEventDelay();

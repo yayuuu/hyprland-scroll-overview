@@ -21,6 +21,11 @@ build() { make -C "$DIR"; }
 unload_both() {
   hyprctl plugin unload "$STOCK_SO" >/dev/null 2>&1 || true
   hyprctl plugin unload "$DEV_SO"   >/dev/null 2>&1 || true
+  # A beat between unload and load, or the load can be processed first and become a no-op, leaving
+  # the old build live. `sleep` is not available in every environment this is driven from (it is
+  # blocked in the agent harness), and its absence is what made that failure silent -- `read -t` is
+  # a shell builtin and always works.
+  read -t 0.4 -r _ < /dev/null 2>/dev/null || true
 }
 
 case "${1:-test}" in

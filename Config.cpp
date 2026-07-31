@@ -282,6 +282,10 @@ static void registerConfigValues() {
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CBoolValue>("plugin:scrolloverview:card_plate", "draw a plate behind every card so empty workspaces stay visible", true));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CFloatValue>("plugin:scrolloverview:drop_animation_speed",
+                                                          "duration of the drop transition, in units of 100ms like Hyprland animation speeds", 2.5F,
+                                                          SFloatValueOptions{.min = 0.1F, .max = 30.F}));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
@@ -337,6 +341,10 @@ bool getAdaptiveScale() {
 
 float getMinScale() {
     return std::clamp(getValue<float>("plugin:scrolloverview:min_scale"), 0.05F, 0.9F);
+}
+
+float getDropAnimationSpeed() {
+    return std::clamp(getValue<float>("plugin:scrolloverview:drop_animation_speed"), 0.1F, 30.F);
 }
 
 bool getCardPlate() {
