@@ -1073,6 +1073,13 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     Animation::mgr()->createAnimation({}, viewOffset, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation(1.F, workspaceInsertProgress, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation(0.F, insertSlotSpread, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
+    dropAnimationConfig                  = makeShared<Hyprutils::Animation::SAnimationPropertyConfig>();
+    dropAnimationConfig->overridden      = true;
+    dropAnimationConfig->internalBezier   = OVERVIEW_INSERT_FADE_BEZIER;
+    dropAnimationConfig->internalStyle    = "";
+    dropAnimationConfig->internalSpeed    = ScrollOverview::Config::getDropAnimationSpeed();
+    dropAnimationConfig->internalEnabled  = 1;
+    Animation::mgr()->createAnimation(1.F, dropProgress, dropAnimationConfig, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation(1.F, workspaceInsertFadeProgress, workspaceInsertFadeConfig, AVARDAMAGE_NONE);
 
     scale->setUpdateCallback([this](auto) { damage(); });
@@ -1080,6 +1087,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     workspaceInsertProgress->setUpdateCallback([this](auto) { damage(); });
     workspaceInsertFadeProgress->setUpdateCallback([this](auto) { damage(); });
     insertSlotSpread->setUpdateCallback([this](auto) { damage(); });
+    dropProgress->setUpdateCallback([this](auto) { damage(); });
 
     if (!swipe)
         *scale = targetScale();
@@ -3646,6 +3654,18 @@ void CScrollOverview::endWindowDrag() {
         g_pseudoFocusUntil    = Time::steadyNow() + POST_DROP_PSEUDO_FOCUS_DURATION;
     }
 
+    // hand the visual to the overview's drop animation before the drag state is torn down
+    if (WINDOW && DROPMONITOR) {
+        const auto HANDOFF = draggedWindowGlobalBox();
+        if (!HANDOFF.empty()) {
+            const auto STARTLOCAL = CBox{
+                (HANDOFF.pos() - DROPMONITOR->m_position) * DROPMONITOR->m_scale,
+                HANDOFF.size() * DROPMONITOR->m_scale,
+            };
+            (dropOverview ? dropOverview : this)->beginDropAnimation(WINDOW, STARTLOCAL);
+        }
+    }
+
     clearDragPending();
     if (dropOverview && dropOverview != this)
         dropOverview->clearInsertSlot();
@@ -4548,6 +4568,8 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
             return;
         if (dragActiveWindow && window == getOverviewWindowToShow(dragActiveWindow.lock()))
             return;
+        if (isDropAnimating(window))
+            return; // still in flight; renderDropAnimation() draws it
 
         const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEOFFSET, layout);
         if (!overviewBoxIntersectsMonitor(windowBox, monitor))
@@ -4618,6 +4640,56 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
     renderWindowsByState(false);
     renderWindowsByState(true);
     renderDropIndicator();
+}
+
+bool CScrollOverview::isDropAnimating(const PHLWINDOW& window) const {
+    return window && dropAnimationWindow.lock() == window && dropProgress && dropProgress->value() < 0.999F;
+}
+
+void CScrollOverview::beginDropAnimation(const PHLWINDOW& window, const CBox& startBoxLocal) {
+    if (!window || startBoxLocal.empty() || !dropProgress)
+        return;
+
+    dropAnimationWindow   = window;
+    dropAnimationStartBox = startBoxLocal;
+
+    dropProgress->setValueAndWarp(0.F);
+    *dropProgress = 1.F;
+    damage();
+}
+
+// The destination is read live every frame rather than captured, so a card shifting underneath (an
+// insert transition, a workspace collapsing) is followed instead of fought.
+void CScrollOverview::renderDropAnimation(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now) {
+    const auto WINDOW = getOverviewWindowToShow(dropAnimationWindow.lock());
+    if (!monitor || !shouldShowOverviewWindow(WINDOW) || !isDropAnimating(WINDOW)) {
+        if (dropProgress && dropProgress->value() >= 0.999F)
+            dropAnimationWindow.reset();
+        return;
+    }
+
+    size_t workspaceIdx = 0;
+    for (size_t i = 0; i < images.size(); ++i) {
+        if (images[i] && images[i]->pWorkspace == WINDOW->m_workspace) {
+            workspaceIdx = i;
+            break;
+        }
+    }
+
+    const auto TARGETBOX = getOverviewWindowBox(WINDOW, monitor, renderScale, viewOffset->value(), workspaceOverviewOffset(workspaceIdx, activeIdx, workspacePitch), layout);
+    if (TARGETBOX.empty())
+        return;
+
+    const float T   = std::clamp(dropProgress->value(), 0.F, 1.F);
+    const auto  BOX = CBox{
+        dropAnimationStartBox.pos() + (TARGETBOX.pos() - dropAnimationStartBox.pos()) * T,
+        dropAnimationStartBox.size() + (TARGETBOX.size() - dropAnimationStartBox.size()) * T,
+    };
+
+    if (!overviewBoxIntersectsMonitor(BOX, monitor))
+        return;
+
+    renderWindowLive(monitor, WINDOW, BOX, renderScale, now, nullptr, true);
 }
 
 void CScrollOverview::renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now) {
@@ -4899,7 +4971,10 @@ bool CScrollOverview::shouldAllowRealtimePreviewSchedule() {
     if (closing)
         return true;
 
-    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated())
+    // Any animation we own, not just these two: the card insert/remove transition and the insert-slot
+    // spread were both animating with their frames suppressed, which is why they appeared to jump
+    // straight from start to finish.
+    if (hasRunningOverviewAnimation())
         return true;
 
     if (realtimePreviewFrameQueued) {
@@ -4960,12 +5035,20 @@ bool CScrollOverview::hasRunningWorkspaceAnimation() const {
     return viewOffset->isBeingAnimated() || workspaceInsertProgress->isBeingAnimated() || workspaceInsertFadeProgress->isBeingAnimated();
 }
 
+bool CScrollOverview::hasRunningOverviewAnimation() const {
+    return (scale && scale->isBeingAnimated()) || (insertSlotSpread && insertSlotSpread->isBeingAnimated()) ||
+        (dropProgress && dropProgress->isBeingAnimated()) || hasRunningWorkspaceAnimation();
+}
+
 bool CScrollOverview::shouldSuppressRenderDamage() const {
     const auto MONITOR = pMonitor.lock();
     if (!MONITOR || closing)
         return false;
 
-    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated())
+    // Same list as the frame-scheduling gate, and for the same reason: this suppressed render damage
+    // while a plugin animation was in flight, so exactly one intermediate frame got presented and then
+    // the pipeline stalled until the animation ended. Two gates, one predicate.
+    if (hasRunningOverviewAnimation())
         return false;
 
     const auto ACTIVEIDX = activeWorkspaceIndex();
@@ -5698,6 +5781,7 @@ void CScrollOverview::render() {
     }
 
     renderDraggedWindow(MONITOR, ACTIVEIDX, PITCH, SCALE, NOW);
+    renderDropAnimation(MONITOR, ACTIVEIDX, PITCH, SCALE, NOW);
     renderPinnedFloatingWindows(MONITOR, SCALE, NOW);
 
     for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_TOP, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY}) {

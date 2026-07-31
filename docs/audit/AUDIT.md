@@ -392,3 +392,49 @@ bounding box of the changed region.
 session (`grep -c scrolloverview` on the log is 0, including the plugin's own load lines), so attempt
 4 could not be told apart from "the function is never called". Fix that first — a debug Hyprland log,
 or a dispatcher that reports plugin state on demand — then the drop animation is a short job.
+
+---
+
+## F17 — "only the first and last frame are visible" ✓ FIXED (fork) — severity A, and it was the root
+
+The user's description — *"the window just snaps into frame, only initial and final frame is visible,
+the whole middle is missing"* — is not a broken animation. It is animations running correctly while
+their **intermediate frames are never presented**.
+
+The plugin gates presentation in two places, and both listed only two animated variables:
+
+    // shouldAllowRealtimePreviewSchedule()  -- hooks CMonitor::scheduleFrame
+    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated()) return true;
+
+    // shouldSuppressRenderDamage()          -- hooks CMonitor::addDamage
+    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated()) return false;
+
+So the card insert/remove transition, the insert-slot spread, and any animation added later advanced
+in state with their frames dropped. Measured signature: exactly one intermediate frame is presented
+(the first `damage()` from the update callback gets through) and then the pipeline stalls until the
+animation ends — consecutive captures identical, yet all differing from the settled frame.
+
+**This is also why four attempts at the drop transition looked like they never drew.** They ran. They
+were not presented.
+
+Fixed with one predicate used by both gates:
+
+    bool CScrollOverview::hasRunningOverviewAnimation() const {
+        return (scale && scale->isBeingAnimated())
+            || (insertSlotSpread && insertSlotSpread->isBeingAnimated())
+            || (dropProgress && dropProgress->isBeingAnimated())
+            || hasRunningWorkspaceAnimation();
+    }
+
+**Rule for this fork: an animated variable that is not in `hasRunningOverviewAnimation()` will not be
+seen.** Add new ones there, in the same commit that creates them.
+
+With presentation fixed, the overview-owned drop animation (removed earlier as unproven) was restored
+and now measures as continuous motion at the default 250 ms
+(`plugin:scrolloverview:drop_animation_speed`), frame to frame:
+
+    q0 -> q1  1949x1215      q2 -> q3  929x1057
+    q1 -> q2   927x1060      q3 -> q4  935x1059
+
+The card insert/remove transition and the slot spread were suppressed by the same gates and are now
+presented too.

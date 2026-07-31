@@ -73,6 +73,14 @@ class CScrollOverview : public IOverview {
     void   renderWindowLive(PHLMONITOR monitor, PHLWINDOW window, const CBox& windowBox, float renderScale, const Time::steady_tp& now, const CBox* workspaceBox = nullptr,
                              bool dragged = false);
     void   renderDraggedWindow(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now);
+    // The drop transition. The drag preview lives in SCREEN space (cursor + card-scaled size) while
+    // cards render windows mapped INTO card space, so driving the compositor's own animation makes the
+    // travel happen inside the destination card -- a few dozen px that reads as a snap. Only the
+    // overview knows both spaces, so it owns this: interpolate from where your hand let go to the
+    // window's box in its new card, then hand off to the card render.
+    void   beginDropAnimation(const PHLWINDOW& window, const CBox& startBoxLocal);
+    void   renderDropAnimation(PHLMONITOR monitor, size_t activeIdx, float workspacePitch, float renderScale, const Time::steady_tp& now);
+    bool   isDropAnimating(const PHLWINDOW& window) const;
     void   renderPinnedFloatingWindows(PHLMONITOR monitor, float overviewScale, const Time::steady_tp& now);
     void   moveViewportWorkspace(bool up);
     void   trackpadSwipeLayout(const PHLWORKSPACE target, const double delta);
@@ -155,6 +163,11 @@ class CScrollOverview : public IOverview {
     void   sendOverviewFrameCallbacks(const Time::steady_tp& now);
     bool   isVisibleRealtimePreviewWindow(const PHLWINDOW& window) const;
     bool   hasRunningWorkspaceAnimation() const;
+    // EVERY animation this plugin owns, in one place. The frame-scheduling hook suppresses frames
+    // unless something here says an animation is in flight, so an animated variable missing from this
+    // list advances in state while none of its intermediate frames are ever presented -- you see the
+    // first frame and the last one and nothing between. Add new animated variables HERE.
+    bool   hasRunningOverviewAnimation() const;
     bool   shouldAllowRealtimePreviewFrame() const;
     void   scheduleMinimumPreviewFrame();
     void   schedulePreviewFrameAfter(std::chrono::milliseconds delay);
@@ -304,6 +317,10 @@ class CScrollOverview : public IOverview {
     bool                             sweepEmptiedPending = false;
     PHLWINDOWREF                     sweepFollowWindow;
     PHLANIMVAR<float>                insertSlotSpread;
+    PHLANIMVAR<float>                dropProgress;
+    SP<Hyprutils::Animation::SAnimationPropertyConfig> dropAnimationConfig;
+    PHLWINDOWREF                     dropAnimationWindow;
+    CBox                             dropAnimationStartBox;
     wl_event_source*                 dragAutoScrollTimer = nullptr;
     bool                             dragAutoScrollArmed = false;
     double                           dragAutoScrollSpeed = 0.0; // rendered px per tick, signed
