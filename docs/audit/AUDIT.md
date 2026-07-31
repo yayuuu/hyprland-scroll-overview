@@ -132,7 +132,7 @@ the test rig but not for the user".
 
 ---
 
-## F7 — Only ~2.6 of N workspaces can ever be on screen ✓ FIXED (fork) — severity A
+## F7 — Only ~2.6 of N workspaces can ever be on screen — adaptive built, then TURNED OFF by choice
 
 **The second half of "the workspace disappeared".** At `scale = 0.35` a card is 1008 px and the
 pitch is 1098 px, so a 2880 px screen holds 2.6 cards. With 7 workspaces, 4 were off-screen at
@@ -289,3 +289,22 @@ insert).
 
 Fixed: the leading slot bisects downward like every interior gap (first_id / 2, then search down and
 up), so 1000 -> 500 -> 250 -> ... and id 1 is only reached after ~10 leading inserts.
+
+---
+
+## F7 revisited — adaptive sizing is off by default
+
+Measured on this machine (2880 px wide, gap 60, monitor scale 1.5), fit-all scale by workspace
+count: 3 -> 0.29, 4 -> 0.21, 5 -> 0.16, 7 -> 0.11. With any sane legibility floor, **fit-all only
+works up to about four workspaces**; past that the floor takes over and the carousel scrolls anyway.
+So the cost -- cards resizing whenever a workspace appears or disappears, smaller drop targets,
+unreadable previews -- bought very little.
+
+Decision: `adaptive_scale` defaults to **false**. Cards stay at the configured `scale` (0.35 here:
+1008 px wide, ~2.6 on screen, previews readable), and the carousel scrolls, which is the position
+niri takes with its fixed `zoom`. `adaptive_scale = true` plus `min_scale` remains available.
+
+Consequence, still open: with ~2.6 cards visible, nothing on screen says how many workspaces exist
+either side. The pill bar was assumed to cover this -- it does not; it is collapsed to a small pill
+and is not a workspace inventory while the overview is up. An edge affordance (a peek sliver, or a
+"3 more ->" count at each edge) would close that gap cheaply and without touching layout.

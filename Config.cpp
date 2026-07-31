@@ -269,8 +269,13 @@ static void registerConfigValues() {
                                   makeShared<CIntValue>("plugin:scrolloverview:gesture_distance", "gesture distance in pixels", 200, SIntValueOptions{.min = 1}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
+    // Off by default: fit-all only genuinely works up to ~4 workspaces on a 2880px screen (past that
+    // the min_scale floor takes over and the carousel scrolls anyway), and it was paid for with
+    // cards resizing whenever a workspace appeared or disappeared, smaller drop targets and
+    // unreadable previews. niri takes the same position with its fixed `zoom`. The pill bar already
+    // draws a dot per workspace over the overview, so "what exists" is answered without shrinking.
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
-                                  makeShared<CBoolValue>("plugin:scrolloverview:adaptive_scale", "shrink cards so every workspace fits on screen", true));
+                                  makeShared<CBoolValue>("plugin:scrolloverview:adaptive_scale", "shrink cards so every workspace fits on screen", false));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CFloatValue>("plugin:scrolloverview:min_scale", "floor for adaptive_scale; past it the carousel scrolls instead", 0.18F,
                                                           SFloatValueOptions{.min = 0.05F, .max = 0.9F}));
