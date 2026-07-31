@@ -2867,14 +2867,14 @@ std::optional<WORKSPACEID> CScrollOverview::insertSlotWorkspaceID(size_t slot) c
 
     const auto idAt = [this](size_t idx) -> WORKSPACEID { return images[idx]->pWorkspace->m_id; };
 
-    const auto TAKEN = [](WORKSPACEID id) {
-        for (const auto& w : State::workspaceState()->workspaces()) {
-            const auto WORKSPACE = w.lock();
-            if (WORKSPACE && WORKSPACE->m_id == id)
-                return true;
-        }
-        return false;
-    };
+    // Collected once: this used to re-scan every workspace for each candidate id, and with a step of
+    // 1000 a dense gap walks hundreds of candidates -- on every pointer motion during a drag.
+    std::unordered_set<WORKSPACEID> takenIDs;
+    for (const auto& w : State::workspaceState()->workspaces()) {
+        if (const auto WORKSPACE = w.lock())
+            takenIDs.emplace(WORKSPACE->m_id);
+    }
+    const auto TAKEN = [&takenIDs](WORKSPACEID id) { return takenIDs.contains(id); };
 
     if (slot == images.size()) { // after the last card
         const auto BASE = idAt(images.size() - 1);
@@ -2927,7 +2927,9 @@ void CScrollOverview::updateInsertSlot() {
         return;
     }
 
-    const auto slot    = insertSlotAtOverviewPoint(lastMousePosLocal);
+    const auto slot = insertSlotAtOverviewPoint(lastMousePosLocal);
+    if (slot == insertSlot && !insertSlotBlocked)
+        return; // unchanged and already usable: skip the id lookup entirely
     // a slot with no free workspace number cannot be inserted into. Keep it, but flagged: the
     // gesture still gets acknowledged (drawn blocked, no cards moved) instead of silently
     // doing nothing, which just reads as the feature being broken.
@@ -3543,9 +3545,23 @@ void CScrollOverview::endWindowDrag() {
         }
     }
 
+    // Hand the animation over. The drag preview is drawn from a synthetic box (cursor position +
+    // card-scaled size) that has nothing to do with the window's own animated position, so at
+    // release the preview simply stopped being drawn while the real window was already at its
+    // destination -- the window appeared to teleport out of your hand. Seeding its position from the
+    // drag box gives the layout animation a start point, so it glides (and grows) into place.
+    const auto HANDOFFBOX = draggedWindowGlobalBox();
+    const auto SEEDHANDOFF = [&]() {
+        if (!TARGET || HANDOFFBOX.empty())
+            return;
+
+        TARGET->setPositionGlobal(HANDOFFBOX);
+        TARGET->warpPositionSize(); // establishes the start; the goal below is what animates
+    };
+
     if (RETILEONEND && MOVEWORKSPACE) {
+        SEEDHANDOFF();
         Desktop::globalWindowController()->moveWindowToWorkspace(WINDOW, DROPWORKSPACE);
-        RESTOREACTIVEWORKSPACE();
 
         if (DROPSCROLLINGLAYOUT) {
             if (!dropWorkspaceFullyVisible)
@@ -3557,9 +3573,9 @@ void CScrollOverview::endWindowDrag() {
         }
 
         TARGET->rememberFloatingSize(dragOriginalFloatSize);
-        RESTOREACTIVEWORKSPACE();
         RESTOREVIEWPORTWORKSPACE();
     } else if (RETILEONEND) {
+        SEEDHANDOFF();
         TARGET->damageEntire();
 
         if (DROPANCHOR && !dropDirection.empty() && !DROPSCROLLINGLAYOUT && DROPANCHOR->layoutTarget()) {
@@ -3572,7 +3588,6 @@ void CScrollOverview::endWindowDrag() {
             moveOverviewScrollingTargetToWorkspaceEdge(TARGET, dropSide);
 
         TARGET->rememberFloatingSize(dragOriginalFloatSize);
-        TARGET->warpPositionSize();
         TARGET->damageEntire();
 
         Desktop::focusState()->fullWindowFocus(WINDOW, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);

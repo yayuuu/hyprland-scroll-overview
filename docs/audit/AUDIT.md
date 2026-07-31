@@ -308,3 +308,36 @@ Consequence, still open: with ~2.6 cards visible, nothing on screen says how man
 either side. The pill bar was assumed to cover this -- it does not; it is collapsed to a small pill
 and is not a workspace inventory while the overview is up. An edge affordance (a peek sliver, or a
 "3 more ->" count at each edge) would close that gap cheaply and without touching layout.
+
+---
+
+## F16 — The drop does not animate; it teleports — DIAGNOSED, fix not built
+
+Reported as "from release to settle the whole frame is skipped, feels laggy".
+
+Three separate causes, in the order they were found:
+
+1. The drag preview is drawn from a **synthetic box** (`draggedWindowGlobalBox()` = cursor position +
+   card-scaled size) with no relation to the window's own animated position. At release the preview
+   stops being drawn while the real window is already at its destination, so nothing ever moves
+   between the two. Fixed: the drop now seeds the window's position from the drag box first
+   (`SEEDHANDOFF`), and the redundant `warpPositionSize()` in the tiled same-workspace path is gone.
+
+2. `windowsMove` was reported by `hyprctl animations` as **speed 0.0** — the config sets `windows`
+   at 4.2 but never the child leaf, and it did not inherit. Set explicitly in
+   `~/.config/hypr/modules/animations.lua`; it now reads 4.2 / pillMorph.
+
+3. Even so, measured frame-to-frame RMSE after release still shows one jump and then a settled
+   image by ~120 ms (a 420 ms animation would still be in flight). The remaining cause is
+   compositor-side: **Hyprland warps a window when it changes workspace**, deliberately, so windows
+   do not fly across the screen on a workspace switch. Card rendering follows
+   `GEOMETRIC_CURRENT`, so it would show an animation if one were running — there is none to show.
+
+What an actual fix requires: the plugin animates **its own preview**. Keep drawing the dragged
+window after release and animate its box from the hand position into the destination card box over
+~150-250 ms, then stop drawing it and let the real (already warped) window take over. That needs one
+animated variable plus keeping the drag preview alive past button release. Not built.
+
+Measurement technique for next time: `grim` frames at 40/80/120/200/600 ms after release, compared
+with `magick compare -metric RMSE`. A running animation shows non-trivial differences across the
+first few; a warp shows one jump then zeros.
