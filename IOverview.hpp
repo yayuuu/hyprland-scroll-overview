@@ -30,6 +30,12 @@ class IOverview {
     virtual void  onSwipeUpdate(double delta) = 0;
     virtual void  onSwipeEnd()                = 0;
 
+    // continuous carousel navigation driven by a trackpad swipe while the overview is open.
+    // delta is raw finger travel in logical px; the overview picks the axis matching its layout.
+    virtual void  onNavigateSwipeBegin()                       = 0;
+    virtual void  onNavigateSwipeUpdate(const Vector2D& delta) = 0;
+    virtual void  onNavigateSwipeEnd()                         = 0;
+
     virtual void  close()                  = 0;
     virtual void  selectHoveredWorkspace() = 0;
     virtual bool  moveSelection(const std::string& direction) = 0;

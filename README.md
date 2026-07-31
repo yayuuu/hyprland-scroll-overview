@@ -202,11 +202,12 @@ scrolloverview-gesture = 3, up, overview        # 3-finger up swipe
 scrolloverview-gesture = 4, up, overview, mod:SUPER, scale:1.5
 scrolloverview-gesture = 4, up, overview, disable_inhibit   # fire even when an app inhibits gestures
 scrolloverview-gesture = 3, up, unset           # remove a previously set gesture
+scrolloverview-gesture = 4, horizontal, navigate # continuous carousel navigation
 ```
 
-| name                   | description                                                             | arguments       |
-| ---------------------- | ----------------------------------------------------------------------- | --------------- |
-| scrolloverview-gesture | same as gesture, but for ScrollOverview gestures. Supports: `overview`. | Same as gesture |
+| name                   | description                                                                          | arguments       |
+| ---------------------- | ------------------------------------------------------------------------------------ | --------------- |
+| scrolloverview-gesture | same as gesture, but for ScrollOverview gestures. Supports: `overview`, `navigate`.  | Same as gesture |
 
 #### Lua
 
@@ -218,16 +219,40 @@ hl.plugin.scrolloverview.gesture({ fingers = 3, direction = "vertical" })
 hl.plugin.scrolloverview.gesture({ fingers = 4, direction = "vertical", mod = "SUPER", scale = 1.5 })
 hl.plugin.scrolloverview.gesture({ fingers = 4, direction = "vertical", disable_inhibit = true })
 hl.plugin.scrolloverview.gesture({ fingers = 3, direction = "vertical", action = "unset" })
+hl.plugin.scrolloverview.gesture({ fingers = 4, direction = "horizontal", action = "navigate" })
 ```
 
 | field     | type   | description                                              | default    |
 | --------- | ------ | -------------------------------------------------------- | ---------- |
 | fingers   | number | finger count (2–9)                                       | required   |
 | direction | string | swipe direction (`up`, `down`, `left`, `right`, …)       | required   |
-| action    | string | `overview` to register, `unset` to remove                | `overview` |
+| action    | string | `overview` to open/close, `navigate` to scroll the carousel, `unset` to remove | `overview` |
 | mod       | string | modifier mask held during the gesture (e.g. `SUPER`)     | none       |
 | scale     | number | gesture delta scale, `[0.1 – 10]`                        | `1.0`      |
 | disable_inhibit | bool | fire the gesture even when an app inhibits gestures   | `false`    |
+
+#### The `navigate` action
+
+`action = "navigate"` moves the carousel continuously while the overview is open: the cards
+track the finger 1:1 and snap to the nearest one on release, instead of stepping a whole
+workspace at a time.
+
+Hyprland's gesture manager refuses two gestures on the same finger count and axis, so a
+`navigate` gesture cannot coexist with a native `gesture = 4, horizontal, workspace`. It does
+not need to: when no overview is open, `navigate` forwards to a native workspace swipe, so one
+binding covers both cases. Register it *instead of* the native gesture:
+
+```lua
+-- NOT hl.gesture({ fingers = 4, direction = "horizontal", action = "workspace" })
+hl.plugin.scrolloverview.gesture({ fingers = 4, direction = "horizontal", action = "navigate" })
+```
+
+Two config values tune it:
+
+| property                | type  | description                                                        | default |
+| ----------------------- | ----- | ------------------------------------------------------------------ | ------- |
+| input:navigate_factor   | float | carousel travel per px of finger travel                            | `1.0`   |
+| input:navigate_invert   | bool  | move the cards against the fingers instead of with them            | `false` |
 
 ### Other Lua Examples
 

@@ -279,6 +279,12 @@ static void registerConfigValues() {
                                   makeShared<CFloatValue>("plugin:scrolloverview:input:touchpad_scroll_factor", "overview touchpad scroll factor", 1.F,
                                                           SFloatValueOptions{.min = 0.F}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CFloatValue>("plugin:scrolloverview:input:navigate_factor",
+                                                          "carousel travel per px of finger travel for the navigate trackpad gesture", 1.F, SFloatValueOptions{.min = 0.F}));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CBoolValue>("plugin:scrolloverview:input:navigate_invert",
+                                                         "invert the navigate trackpad gesture: cards move against the fingers instead of with them", false));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CIntValue>("plugin:scrolloverview:input:left_handed", "overview left handed mouse buttons, 2 follows input:left_handed", 2,
                                                         SIntValueOptions{.min = 0, .max = 2}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
@@ -347,6 +353,14 @@ float getTouchpadScrollFactor() {
 
     return OVERVIEWTOUCHPADSCROLLFACTOR * std::max<float>(0.F, getValue<float>("input:touchpad:scroll_factor")) *
         std::max<float>(0.F, getValue<float>("plugin:scrolloverview:input:touchpad_scroll_factor"));
+}
+
+float getNavigateFactor() {
+    return std::max<float>(0.F, getValue<float>("plugin:scrolloverview:input:navigate_factor"));
+}
+
+bool getNavigateInvert() {
+    return getValue<bool>("plugin:scrolloverview:input:navigate_invert");
 }
 
 static EScrollAction defaultVerticalScrollAction(ELayout layout) {

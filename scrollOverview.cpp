@@ -3278,23 +3278,63 @@ void CScrollOverview::trackpadSwipeLayout(const PHLWORKSPACE target, const doubl
 }
 
 void CScrollOverview::trackpadSwipeWorkspace(const double delta) {
-    const auto MONITOR = pMonitor.lock();
-    if (!MONITOR)
-        return;
-
     // fingers lifted — snap to the nearest workspace
     if (delta == 0.0) {
         finishWorkspaceScrollFollow();
         return;
     }
 
+    followWorkspaceScroll(delta * ScrollOverview::Config::getTouchpadScrollFactor());
+}
+
+// move the carousel by renderedDelta rendered (physical) px, 1:1, without snapping.
+// shared by the 2-finger scroll path and the navigate trackpad gesture.
+void CScrollOverview::followWorkspaceScroll(const double renderedDelta) {
+    const auto MONITOR = pMonitor.lock();
+    if (!MONITOR)
+        return;
+
     const float SCALE = std::max<float>(scale->value(), 0.01F);
 
-    trackpadWorkspaceFollowing  = true;
-    trackpadScrollAccum         += delta * ScrollOverview::Config::getTouchpadScrollFactor();
+    trackpadWorkspaceFollowing = true;
+    trackpadScrollAccum += renderedDelta;
 
     viewOffset->setValueAndWarp(axisOffsetVector(sc<float>(trackpadWorkspaceScrollOffset(MONITOR, SCALE)), layout));
     damage();
+}
+
+void CScrollOverview::onNavigateSwipeBegin() {
+    if (closing)
+        return;
+
+    // a swipe always starts a fresh follow: drop any leftover accumulation from a scroll
+    trackpadScrollAccum        = 0.0;
+    trackpadWorkspaceFollowing = false;
+    trackpadTapeFollowing      = false;
+}
+
+void CScrollOverview::onNavigateSwipeUpdate(const Vector2D& delta) {
+    const auto MONITOR = pMonitor.lock();
+    if (!MONITOR || closing || images.empty())
+        return;
+
+    const double FINGERDELTA = axisValue(delta, layout);
+    if (FINGERDELTA == 0.0)
+        return;
+
+    // finger travel arrives in logical px; the carousel moves in rendered px, and the cards
+    // move with the finger, so the sign is flipped.
+    const double DIRECTION     = ScrollOverview::Config::getNavigateInvert() ? 1.0 : -1.0;
+    const double RENDEREDDELTA = DIRECTION * FINGERDELTA * std::max<double>(MONITOR->m_scale, 0.01) * ScrollOverview::Config::getNavigateFactor();
+
+    followWorkspaceScroll(RENDEREDDELTA);
+}
+
+void CScrollOverview::onNavigateSwipeEnd() {
+    if (closing)
+        return;
+
+    finishWorkspaceScrollFollow();
 }
 
 double CScrollOverview::trackpadWorkspaceScrollOffset(PHLMONITOR monitor, float renderScale) {

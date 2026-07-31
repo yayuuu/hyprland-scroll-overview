@@ -92,6 +92,8 @@ bool          getLeftHanded();
 int           getDragMode();
 int           getDragThreshold();
 float         getTouchpadScrollFactor();
+float         getNavigateFactor();
+bool          getNavigateInvert();
 EScrollAction getVerticalScrollAction(ELayout layout);
 EScrollAction getHorizontalScrollAction(ELayout layout);
 int           getWallpaperMode();

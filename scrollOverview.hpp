@@ -46,6 +46,10 @@ class CScrollOverview : public IOverview {
     void         onSwipeUpdate(double delta) override;
     void         onSwipeEnd() override;
 
+    void         onNavigateSwipeBegin() override;
+    void         onNavigateSwipeUpdate(const Vector2D& delta) override;
+    void         onNavigateSwipeEnd() override;
+
     // close without a selection
     void         close() override;
     void         selectHoveredWorkspace() override;
@@ -73,6 +77,7 @@ class CScrollOverview : public IOverview {
     void   moveViewportWorkspace(bool up);
     void   trackpadSwipeLayout(const PHLWORKSPACE target, const double delta);
     void   trackpadSwipeWorkspace(const double delta);
+    void   followWorkspaceScroll(const double renderedDelta);
     void   finishWorkspaceScrollFollow();
     double trackpadWorkspaceScrollOffset(PHLMONITOR monitor, float renderScale);
     bool   scrollStepAllowed(uint32_t timeMs);

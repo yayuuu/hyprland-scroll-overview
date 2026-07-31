@@ -25,6 +25,7 @@ using namespace Hyprutils::String;
 #include "PluginVersion.hpp"
 #include "scrollOverview.hpp"
 #include "OverviewGesture.hpp"
+#include "NavigateGesture.hpp"
 
 // Methods
 static CFunctionHook* g_pScrollRenderWorkspaceHook = nullptr;
@@ -375,6 +376,9 @@ static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount,
 
     if (action == "overview")
         return g_pTrackpadGestures->addGesture(makeUnique<COverviewGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
+
+    if (action == "navigate")
+        return g_pTrackpadGestures->addGesture(makeUnique<COverviewNavigateGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
 
     if (action == "unset")
         return g_pTrackpadGestures->removeGesture(fingerCount, direction, modMask, deltaScale, disableInhibit);
