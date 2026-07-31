@@ -270,6 +270,13 @@ static void registerConfigValues() {
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CBoolValue>("plugin:scrolloverview:adaptive_scale", "shrink cards so every workspace fits on screen", true));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CFloatValue>("plugin:scrolloverview:min_scale", "floor for adaptive_scale; past it the carousel scrolls instead", 0.18F,
+                                                          SFloatValueOptions{.min = 0.05F, .max = 0.9F}));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CBoolValue>("plugin:scrolloverview:card_plate", "draw a plate behind every card so empty workspaces stay visible", true));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
@@ -317,6 +324,18 @@ void registerConfig() {
 
 int getGestureDistance() {
     return std::max<int>(1, getValue<int>("plugin:scrolloverview:gesture_distance"));
+}
+
+bool getAdaptiveScale() {
+    return getValue<bool>("plugin:scrolloverview:adaptive_scale");
+}
+
+float getMinScale() {
+    return std::clamp(getValue<float>("plugin:scrolloverview:min_scale"), 0.05F, 0.9F);
+}
+
+bool getCardPlate() {
+    return getValue<bool>("plugin:scrolloverview:card_plate");
 }
 
 float getScale() {

@@ -100,6 +100,8 @@ class CScrollOverview : public IOverview {
     size_t dragWorkspaceIndex(PHLWINDOW window) const;
     void   updateWorkspaceOverflow();
     CBox   workspaceOverviewVisibleBox(size_t workspaceIdx, const CBox& workspaceBox, float renderScale, PHLMONITOR monitor) const;
+    // configured scale, shrunk so every card fits on screen when there are many workspaces
+    float      targetScale() const;
     float      workspaceOverviewOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const;
     float      workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const;
     float      workspaceOverviewAlpha(size_t workspaceIdx) const;
@@ -278,6 +280,7 @@ class CScrollOverview : public IOverview {
     // drag-to-insert slot: index in [0, images.size()], meaning "insert before images[slot]".
     // insertSlotSpread animates the neighbouring cards apart to reveal a full-size empty slot.
     std::optional<size_t>            insertSlot;
+    bool                             insertSlotBlocked = false; // slot has no free workspace id
     PHLANIMVAR<float>                insertSlotSpread;
     wl_event_source*                 dragAutoScrollTimer = nullptr;
     bool                             dragAutoScrollArmed = false;

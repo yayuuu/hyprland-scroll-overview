@@ -13,7 +13,7 @@ Severity: **A** = looks broken / loses work, **B** = confusing, **C** = polish.
 
 ---
 
-## F1 — An empty workspace card renders nothing at all ✗ OPEN — severity A
+## F1 — An empty workspace card renders nothing at all ✓ FIXED (fork) — severity A
 
 **This is the "the workspace disappeared, I have to close and reopen the overview" bug.**
 
@@ -39,7 +39,10 @@ Cause: `CScrollOverview::renderWorkspaceBackground()` only ever emits a shadow (
 the per-workspace wallpaper (`wallpaper != 0`) and bottom layer-shell surfaces. Nothing draws
 the card itself, so a card is only visible by virtue of the windows inside it.
 
-Fix (not yet implemented): always paint a card plate — a low-alpha fill plus a 1–2px border at
+Fixed: every card now paints a plate — a low-alpha fill plus a border, under the windows,
+`plugin:scrolloverview:card_plate` (default on). Original note kept below.
+
+Fix: always paint a card plate — a low-alpha fill plus a 1–2px border at
 the workspace box, under the windows. That also fixes counting cards for positional
 navigation, and makes an empty card distinguishable from an insert slot (which *does* draw an
 outline — see `s10_scroll_2000ms.png`). Config-only workarounds that help but do not solve it:
@@ -76,9 +79,12 @@ back to the `render_unfocused_fps` budget.
 
 ---
 
-## F4 — Nothing marks the active / selected card ✗ OPEN — severity B
+## F4 — Nothing marks the active / selected card ✓ PARTLY FIXED (fork) — severity B
 
-There is no highlight, border, tint or dot on the active workspace or the selected window —
+The card plate from F1 now draws the selected card with a brighter, thicker edge, which is the
+first cue of any kind. Still no marker on the selected *window* inside a card.
+
+Originally: there is no highlight, border, tint or dot on the active workspace or the selected window —
 being horizontally centred is the only cue, and that cue is invisible while the carousel is
 mid-animation or when the centred workspace is empty (F1). Keyboard selection (bare arrows,
 `moveSelection()`) therefore has no visible effect on an empty card.
@@ -93,15 +99,19 @@ count cards — and F1 makes the count wrong whenever an empty workspace sits in
 
 ---
 
-## F6 — A refused insert gives no feedback ✗ OPEN — severity B
+## F6 — A refused insert gives no feedback ✓ FIXED (fork) — severity B
 
 Hyprland orders workspaces by numeric id, so an insert between two numerically adjacent
 workspaces (7 and 8) has no free number and is refused: no slot opens, and on release the
 window simply flies home. Nothing says why. The keyboard path (`ws-index.sh insert`) at least
 sends a `notify-send`; the drag path is silent.
 
-Possible fix: draw the slot in a "blocked" style (dimmed / red edge) instead of not drawing it,
-so the gesture is acknowledged and the reason is visible.
+Fixed: a blocked slot is now drawn in the bare gap in a red tint, without moving the cards, so
+the gesture is acknowledged. Also largely designed out: `ws-index.sh respace` renumbers the open
+workspaces onto a step of 10 (run once on this machine: 4,5,7,8,9,77 → 10,20,30,40,50,60), and
+new workspaces are allocated on the same step, so gaps normally have nine free numbers. Before
+that respace, 3 of 4 gaps on this machine were refused — which is why drag-to-insert "worked for
+the test rig but not for the user".
 
 ---
 
@@ -119,3 +129,29 @@ so the gesture is acknowledged and the reason is visible.
 - Cards spread apart by exactly half a pitch either side of the hovered slot, and the slot
   placeholder outline is clearly legible (`s10_scroll_2000ms.png`).
 - No plugin errors in the Hyprland log across the whole run.
+
+---
+
+## F7 — Only ~2.6 of N workspaces can ever be on screen ✓ FIXED (fork) — severity A
+
+**The second half of "the workspace disappeared".** At `scale = 0.35` a card is 1008 px and the
+pitch is 1098 px, so a 2880 px screen holds 2.6 cards. With 7 workspaces, 4 were off-screen at
+all times, with nothing on screen to say they existed, and switching slid more of them out.
+Reopening the overview does not help because it re-centres on the same three.
+
+Measured before the fix, active = 40:
+
+    ws 10  x  -2358..-1350  OFF SCREEN     ws 42  x  2034..3042  on screen
+    ws 20  x  -1260..  -252 OFF SCREEN     ws 52  x  3132..4140  OFF SCREEN
+    ws 30  x   -162..  846  on screen      ws 60  x  4230..5238  OFF SCREEN
+    ws 40  x    936.. 1944  on screen (active)
+
+Fixed: the configured scale is now a maximum, not a constant. `CScrollOverview::targetScale()`
+shrinks it so every workspace fits, down to `plugin:scrolloverview:min_scale` (0.18) past which
+the carousel scrolls as before; `plugin:scrolloverview:adaptive_scale` turns it off. Re-applied
+whenever a workspace appears or disappears, and animated, so cards glide to the new size. With 6
+workspaces this puts 5 on screen at once instead of 2.6.
+
+Note the count comes from the workspace registry, not `images` — the first cut read `images`,
+which is still empty while the overview is being constructed, so the fit silently never applied
+on open.

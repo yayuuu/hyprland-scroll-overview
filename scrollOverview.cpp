@@ -687,35 +687,55 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
 }
 
 
-// The empty slot the cards have spread apart to reveal: a card-sized outline so the drop
-// target reads as "a workspace goes here", not just a gap in the carousel.
-static void renderOverviewInsertSlot(PHLMONITOR monitor, const CBox& slotBox, float alpha) {
-    if (!monitor || alpha <= 0.001F || slotBox.width < 1 || slotBox.height < 1)
+// A filled, outlined rectangle: the card plates and the insert slot both have to be visible even
+// when there is nothing inside them.
+static void renderOverviewPlate(PHLMONITOR monitor, const CBox& box, const CHyprColor& color, float fillAlpha, float borderAlpha, double thicknessScale = 1.0) {
+    if (!monitor || box.width < 1 || box.height < 1)
         return;
 
-    CRectPassElement::SRectData fill;
-    fill.box           = slotBox.copy().round();
-    fill.color         = CHyprColor{1.F, 1.F, 1.F, 0.06F * alpha};
-    fill.round         = 0;
-    fill.roundingPower = 2.F;
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(fill));
+    if (fillAlpha > 0.001F) {
+        CRectPassElement::SRectData fill;
+        fill.box           = box.copy().round();
+        fill.color         = CHyprColor{color.r, color.g, color.b, fillAlpha};
+        fill.round         = 0;
+        fill.roundingPower = 2.F;
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(fill));
+    }
 
-    const double THICKNESS = std::max(2.0, 3.0 * monitor->m_scale);
+    if (borderAlpha <= 0.001F)
+        return;
+
+    const double THICKNESS = std::max(2.0, 2.0 * monitor->m_scale * thicknessScale);
     const CBox   EDGES[4]  = {
-        {slotBox.x, slotBox.y, slotBox.width, THICKNESS},
-        {slotBox.x, slotBox.y + slotBox.height - THICKNESS, slotBox.width, THICKNESS},
-        {slotBox.x, slotBox.y, THICKNESS, slotBox.height},
-        {slotBox.x + slotBox.width - THICKNESS, slotBox.y, THICKNESS, slotBox.height},
+        {box.x, box.y, box.width, THICKNESS},
+        {box.x, box.y + box.height - THICKNESS, box.width, THICKNESS},
+        {box.x, box.y, THICKNESS, box.height},
+        {box.x + box.width - THICKNESS, box.y, THICKNESS, box.height},
     };
 
     for (const auto& edge : EDGES) {
         CRectPassElement::SRectData data;
         data.box           = edge.copy().round();
-        data.color         = CHyprColor{1.F, 1.F, 1.F, 0.32F * alpha};
+        data.color         = CHyprColor{color.r, color.g, color.b, borderAlpha};
         data.round         = 0;
         data.roundingPower = 2.F;
         g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(data));
     }
+}
+
+// The empty slot the cards have spread apart to reveal: a card-sized outline so the drop target
+// reads as "a workspace goes here", not just a gap in the carousel.
+static void renderOverviewInsertSlot(PHLMONITOR monitor, const CBox& slotBox, float alpha) {
+    if (alpha <= 0.001F)
+        return;
+
+    renderOverviewPlate(monitor, slotBox, CHyprColor{1.F, 1.F, 1.F, 1.F}, 0.06F * alpha, 0.32F * alpha, 1.5);
+}
+
+// A slot that cannot be filled: the workspaces either side have consecutive ids and Hyprland
+// orders workspaces by id. Drawn in the untouched gap so the drag is at least acknowledged.
+static void renderOverviewBlockedSlot(PHLMONITOR monitor, const CBox& gapBox) {
+    renderOverviewPlate(monitor, gapBox, CHyprColor{1.F, 0.36F, 0.30F, 1.F}, 0.10F, 0.40F);
 }
 
 static float getWorkspaceRenderedPitch(PHLMONITOR monitor, float scale, ScrollOverview::Config::ELayout layout) {
@@ -1062,7 +1082,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     insertSlotSpread->setUpdateCallback([this](auto) { damage(); });
 
     if (!swipe)
-        *scale = ScrollOverview::Config::getScale();
+        *scale = targetScale();
 
     const auto initialFullscreenWindow =
         PMONITOR && PMONITOR->m_activeWorkspace ? getOverviewWindowToShow(Fullscreen::controller()->getFullscreenWindow(PMONITOR->m_activeWorkspace)) : PHLWINDOW{};
@@ -1807,6 +1827,47 @@ float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activ
     }
 
     return NEWOFFSET;
+}
+
+// The configured scale is a maximum, not a constant: at scale 0.35 only ~2.6 cards fit on a
+// 2880px screen, so with 7 workspaces four of them sat off-screen with nothing on screen hinting
+// they existed -- which reads as workspaces having disappeared. Shrink to fit, down to a floor
+// past which cards would be unreadable; beyond that the carousel still scrolls as before.
+float CScrollOverview::targetScale() const {
+    const float CONFIGSCALE = ScrollOverview::Config::getScale();
+
+    if (!ScrollOverview::Config::getAdaptiveScale())
+        return CONFIGSCALE;
+
+    const auto MONITOR = pMonitor.lock();
+    if (!MONITOR)
+        return CONFIGSCALE;
+
+    // Count from the workspace registry, not from `images`: this runs while the overview is being
+    // constructed, before rebuildWorkspaceImages() has filled it in, and a count of 0 there meant
+    // the fit was silently skipped on open.
+    size_t COUNT = 0;
+    for (const auto& w : State::workspaceState()->workspaces()) {
+        const auto WORKSPACE = w.lock();
+        if (valid(WORKSPACE) && WORKSPACE->m_monitor == MONITOR && !WORKSPACE->m_isSpecialWorkspace)
+            ++COUNT;
+    }
+    COUNT = std::max(COUNT, images.size());
+
+    if (COUNT <= 1)
+        return CONFIGSCALE;
+
+    const double AXIS  = axisSize(MONITOR->m_size, layout); // logical, same units as workspace_gap
+    const double GAP   = std::max<double>(0.0, ScrollOverview::Config::getWorkspaceGap());
+    const double AVAIL = AXIS - 2.0 * GAP - sc<double>(COUNT - 1) * GAP;
+    const float  FLOOR = std::min(ScrollOverview::Config::getMinScale(), CONFIGSCALE);
+
+    if (AVAIL <= 0.0 || AXIS <= 0.0)
+        return FLOOR;
+
+    const double FIT = AVAIL / (sc<double>(COUNT) * AXIS);
+
+    return std::clamp(sc<float>(std::min<double>(CONFIGSCALE, FIT)), FLOOR, CONFIGSCALE);
 }
 
 float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const {
@@ -2756,15 +2817,23 @@ std::optional<size_t> CScrollOverview::insertSlotAtOverviewPoint(const Vector2D&
     if (CROSSPOS < CROSSMIN - CROSSSLACK || CROSSPOS > CROSSMIN + CROSSSIZE + CROSSSLACK)
         return std::nullopt;
 
+    // The bare gap is only workspace_gap px wide -- 90px here, 3% of the screen -- which is not
+    // a target a hand can hit while dragging. Count the outer EDGERATIO of each neighbouring
+    // card as belonging to the gap as well, so the slot is a few hundred px wide to enter. Once
+    // it opens, the hole itself is a full card wide, so only entry ever needed the help.
+    static constexpr double EDGERATIO = 0.12;
+
     for (size_t i = 0; i < images.size(); ++i) {
         const auto   BOX   = boxFor(i);
         const double START = axisValue(BOX.pos(), layout);
-        const double END   = START + axisSize(BOX.size(), layout);
+        const double SIZE  = axisSize(BOX.size(), layout);
+        const double EDGE  = SIZE * EDGERATIO;
 
-        if (AXIS < START)
-            return i; // before this card: either the leading edge or the gap behind it
-        if (AXIS <= END)
-            return std::nullopt; // over a card
+        if (AXIS < START + EDGE)
+            return i; // the gap behind this card, or its leading edge
+        if (AXIS <= START + SIZE - EDGE)
+            return std::nullopt; // solidly over the card
+        // trailing edge: falls through to the next card's leading test, or past the end
     }
 
     return images.size(); // past the last card
@@ -2835,17 +2904,18 @@ void CScrollOverview::updateInsertSlot() {
         return;
     }
 
-    auto slot = insertSlotAtOverviewPoint(lastMousePosLocal);
+    const auto slot    = insertSlotAtOverviewPoint(lastMousePosLocal);
+    // a slot with no free workspace number cannot be inserted into. Keep it, but flagged: the
+    // gesture still gets acknowledged (drawn blocked, no cards moved) instead of silently
+    // doing nothing, which just reads as the feature being broken.
+    const bool blocked = slot && !insertSlotWorkspaceID(*slot);
 
-    // a slot with no free workspace number cannot be inserted into, so do not offer it
-    if (slot && !insertSlotWorkspaceID(*slot))
-        slot.reset();
-
-    if (slot == insertSlot)
+    if (slot == insertSlot && blocked == insertSlotBlocked)
         return;
 
-    insertSlot = slot;
-    *insertSlotSpread = insertSlot ? 1.F : 0.F;
+    insertSlot        = slot;
+    insertSlotBlocked = blocked;
+    *insertSlotSpread = (insertSlot && !blocked) ? 1.F : 0.F;
     damage();
 }
 
@@ -2854,6 +2924,7 @@ void CScrollOverview::clearInsertSlot() {
         return;
 
     insertSlot.reset();
+    insertSlotBlocked = false;
     if (insertSlotSpread)
         *insertSlotSpread = 0.F;
     damage();
@@ -4316,6 +4387,16 @@ void CScrollOverview::renderWorkspaceBackground(PHLMONITOR monitor, size_t works
 
     renderOverviewWorkspaceShadow(monitor, WORKSPACEBOX, renderScale, wallpaperMode == 0, WORKSPACEALPHA);
 
+    // Without this a workspace is only visible because of the windows inside it: an EMPTY one
+    // painted nothing whatsoever and was indistinguishable from the gap between cards, which
+    // reads as the workspace having disappeared. The selected card gets a brighter edge, which
+    // doubles as the only cue for which workspace is active.
+    if (ScrollOverview::Config::getCardPlate() && WORKSPACEALPHA > 0.001F) {
+        const bool SELECTED = isSelectedWorkspace(workspace);
+        renderOverviewPlate(monitor, WORKSPACEBOX, CHyprColor{1.F, 1.F, 1.F, 1.F}, (SELECTED ? 0.07F : 0.035F) * WORKSPACEALPHA,
+                            (SELECTED ? 0.36F : 0.14F) * WORKSPACEALPHA, SELECTED ? 1.5 : 1.0);
+    }
+
     if (ScrollOverview::Config::getBlur() && wallpaperMode != 1 && WORKSPACEALPHA > 0.001F)
         OverviewRender::queueBlur(WORKSPACEBOX, 0, 2.F, WORKSPACEALPHA, false);
 
@@ -4495,7 +4576,7 @@ void CScrollOverview::renderPinnedFloatingWindows(PHLMONITOR monitor, float over
     if (!monitor)
         return;
 
-    const auto TARGETOVERVIEWSCALE = ScrollOverview::Config::getScale();
+    const auto TARGETOVERVIEWSCALE = targetScale();
     const auto ANIMATIONPROGRESS   = (1.F - TARGETOVERVIEWSCALE) > 0.001F ? (1.F - overviewScale) / (1.F - TARGETOVERVIEWSCALE) : 1.F;
 
     for (const auto& windowRef : pinnedFloatingWindows) {
@@ -5323,6 +5404,10 @@ void CScrollOverview::onWorkspaceChange() {
     redrawAll();
     viewportCurrentWorkspace = activeWorkspaceIndex();
 
+    // a workspace appeared or vanished: re-fit so the row still shows everything it can
+    if (!closing && !m_isSwiping)
+        *scale = targetScale();
+
     const bool REMOVEDPREVIOUSWORKSPACE =
         REMOVEDWORKSPACE &&
         std::find_if(images.begin(), images.end(), [REMOVEDWORKSPACE](const auto& image) { return image && image->pWorkspace == REMOVEDWORKSPACE; }) == images.end();
@@ -5452,7 +5537,24 @@ void CScrollOverview::render() {
         renderWorkspaceLive(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
     }
 
-    if (insertSlot && insertSlotSpread) {
+    if (insertSlot && insertSlotBlocked) {
+        const bool   PASTEND   = *insertSlot >= images.size();
+        const size_t ANCHOR    = PASTEND ? images.size() - 1 : *insertSlot;
+        const auto   ANCHORBOX = getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), workspaceOverviewOffset(ANCHOR, ACTIVEIDX, PITCH), layout);
+        const double GAP       = std::max<double>(4.0, PITCH - axisSize(ANCHORBOX.size(), layout));
+        auto         gapBox    = ANCHORBOX;
+
+        if (layout == ScrollOverview::Config::ELayout::HORIZONTAL) {
+            gapBox.x     = PASTEND ? ANCHORBOX.x + ANCHORBOX.width : ANCHORBOX.x - GAP;
+            gapBox.width = GAP;
+        } else {
+            gapBox.y      = PASTEND ? ANCHORBOX.y + ANCHORBOX.height : ANCHORBOX.y - GAP;
+            gapBox.height = GAP;
+        }
+
+        if (overviewBoxIntersectsMonitor(gapBox, MONITOR))
+            renderOverviewBlockedSlot(MONITOR, gapBox);
+    } else if (insertSlot && insertSlotSpread) {
         const float SLOTALPHA = std::clamp(insertSlotSpread->value(), 0.F, 1.F);
         // the hole sits one pitch before the card that follows it (or after the last card)
         const bool   PASTEND  = *insertSlot >= images.size();
@@ -5592,7 +5694,7 @@ void CScrollOverview::resetSwipe() {
         return;
     }
 
-    (*scale)    = ScrollOverview::Config::getScale();
+    (*scale)    = targetScale();
     m_isSwiping = false;
 }
 
@@ -5603,7 +5705,7 @@ void CScrollOverview::onSwipeUpdate(double delta) {
 
     const float PERC = closing ? 1.0 - std::clamp(delta / sc<double>(DISTANCE), 0.0, 1.0) : std::clamp(delta / sc<double>(DISTANCE), 0.0, 1.0);
 
-    scale->setValueAndWarp(hyprlerp(1.F, ScrollOverview::Config::getScale(), PERC));
+    scale->setValueAndWarp(hyprlerp(1.F, targetScale(), PERC));
 }
 
 void CScrollOverview::onSwipeEnd() {
@@ -5612,6 +5714,6 @@ void CScrollOverview::onSwipeEnd() {
         return;
     }
 
-    (*scale)    = ScrollOverview::Config::getScale();
+    (*scale)    = targetScale();
     m_isSwiping = false;
 }
