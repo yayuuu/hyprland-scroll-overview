@@ -78,6 +78,16 @@ class CScrollOverview : public IOverview {
     void   trackpadSwipeLayout(const PHLWORKSPACE target, const double delta);
     void   trackpadSwipeWorkspace(const double delta);
     void   followWorkspaceScroll(const double renderedDelta);
+    // drag-to-insert: a drop in a gap / past either end creates a workspace in that slot
+    std::optional<size_t>       insertSlotAtOverviewPoint(const Vector2D& point) const;
+    std::optional<WORKSPACEID>  insertSlotWorkspaceID(size_t slot) const;
+    float                       insertSlotSpreadOffset(size_t workspaceIdx, float workspacePitch) const;
+    void                        updateInsertSlot();
+    void                        clearInsertSlot();
+    PHLWORKSPACE                createInsertSlotWorkspace();
+    void                        updateDragAutoScroll();
+    void                        stopDragAutoScroll();
+    static int                  dragAutoScrollTimerCallback(void* data);
     void   finishWorkspaceScrollFollow();
     double trackpadWorkspaceScrollOffset(PHLMONITOR monitor, float renderScale);
     bool   scrollStepAllowed(uint32_t timeMs);
@@ -265,6 +275,13 @@ class CScrollOverview : public IOverview {
     PHLANIMVAR<float>                scale;
     PHLANIMVAR<Vector2D>             viewOffset;
     PHLANIMVAR<float>                workspaceInsertProgress;
+    // drag-to-insert slot: index in [0, images.size()], meaning "insert before images[slot]".
+    // insertSlotSpread animates the neighbouring cards apart to reveal a full-size empty slot.
+    std::optional<size_t>            insertSlot;
+    PHLANIMVAR<float>                insertSlotSpread;
+    wl_event_source*                 dragAutoScrollTimer = nullptr;
+    bool                             dragAutoScrollArmed = false;
+    double                           dragAutoScrollSpeed = 0.0; // rendered px per tick, signed
     PHLANIMVAR<float>                workspaceInsertFadeProgress;
     SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceInsertFadeConfig;
     SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceRemoveFadeConfig;

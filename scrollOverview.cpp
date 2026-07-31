@@ -686,6 +686,38 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
     }));
 }
 
+
+// The empty slot the cards have spread apart to reveal: a card-sized outline so the drop
+// target reads as "a workspace goes here", not just a gap in the carousel.
+static void renderOverviewInsertSlot(PHLMONITOR monitor, const CBox& slotBox, float alpha) {
+    if (!monitor || alpha <= 0.001F || slotBox.width < 1 || slotBox.height < 1)
+        return;
+
+    CRectPassElement::SRectData fill;
+    fill.box           = slotBox.copy().round();
+    fill.color         = CHyprColor{1.F, 1.F, 1.F, 0.06F * alpha};
+    fill.round         = 0;
+    fill.roundingPower = 2.F;
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(fill));
+
+    const double THICKNESS = std::max(2.0, 3.0 * monitor->m_scale);
+    const CBox   EDGES[4]  = {
+        {slotBox.x, slotBox.y, slotBox.width, THICKNESS},
+        {slotBox.x, slotBox.y + slotBox.height - THICKNESS, slotBox.width, THICKNESS},
+        {slotBox.x, slotBox.y, THICKNESS, slotBox.height},
+        {slotBox.x + slotBox.width - THICKNESS, slotBox.y, THICKNESS, slotBox.height},
+    };
+
+    for (const auto& edge : EDGES) {
+        CRectPassElement::SRectData data;
+        data.box           = edge.copy().round();
+        data.color         = CHyprColor{1.F, 1.F, 1.F, 0.32F * alpha};
+        data.round         = 0;
+        data.roundingPower = 2.F;
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(data));
+    }
+}
+
 static float getWorkspaceRenderedPitch(PHLMONITOR monitor, float scale, ScrollOverview::Config::ELayout layout) {
     return (axisSize(monitor->m_size, layout) * scale + sc<float>(ScrollOverview::Config::getWorkspaceGap())) * monitor->m_scale;
 }
@@ -948,6 +980,12 @@ CScrollOverview::~CScrollOverview() {
     restoreSubmapIfActive();
     if (const auto OPENGL = g_pHyprRenderer ? g_pHyprRenderer->glBackend() : WP<Render::GL::CHyprOpenGLImpl>{})
         OPENGL->makeEGLCurrent();
+    if (dragAutoScrollTimer) {
+        wl_event_source_remove(dragAutoScrollTimer);
+        dragAutoScrollTimer = nullptr;
+        dragAutoScrollArmed = false;
+    }
+
     if (realtimePreviewTimer) {
         wl_event_source_remove(realtimePreviewTimer);
         realtimePreviewTimer = nullptr;
@@ -985,6 +1023,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     applyInputConfigOverrides();
     g_pInputManager->unconstrainMouse();
     realtimePreviewTimer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, realtimePreviewTimerCallback, this);
+    dragAutoScrollTimer  = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, dragAutoScrollTimerCallback, this);
     scheduleMinimumPreviewFrame();
 
     const auto WINDOWSMOVECONFIG = Config::animationTree()->getAnimationPropertyConfig("windowsMove");
@@ -1013,12 +1052,14 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     Animation::mgr()->createAnimation(1.F, scale, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation({}, viewOffset, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation(1.F, workspaceInsertProgress, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
+    Animation::mgr()->createAnimation(0.F, insertSlotSpread, WINDOWSMOVECONFIG, AVARDAMAGE_NONE);
     Animation::mgr()->createAnimation(1.F, workspaceInsertFadeProgress, workspaceInsertFadeConfig, AVARDAMAGE_NONE);
 
     scale->setUpdateCallback([this](auto) { damage(); });
     viewOffset->setUpdateCallback([this](auto) { damage(); });
     workspaceInsertProgress->setUpdateCallback([this](auto) { damage(); });
     workspaceInsertFadeProgress->setUpdateCallback([this](auto) { damage(); });
+    insertSlotSpread->setUpdateCallback([this](auto) { damage(); });
 
     if (!swipe)
         *scale = ScrollOverview::Config::getScale();
@@ -1789,7 +1830,24 @@ float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_
             offset -= workspacePitch + EXTRAINTERVAL(i);
     }
 
-    return offset;
+    return offset + insertSlotSpreadOffset(workspaceIdx, workspacePitch);
+}
+
+// Cards on either side of the hovered slot move apart by half a pitch each, so a full
+// card-sized hole opens up without the carousel appearing to slide sideways. Everything --
+// rendering, window hit-testing, the drop boxes -- reads card positions through
+// workspaceOverviewLogicalOffset(), so adding the term here keeps the visual slot and the
+// droppable region identical by construction.
+float CScrollOverview::insertSlotSpreadOffset(size_t workspaceIdx, float workspacePitch) const {
+    if (!insertSlot || !insertSlotSpread)
+        return 0.F;
+
+    const float T = std::clamp(insertSlotSpread->value(), 0.F, 1.F);
+    if (T <= 0.001F)
+        return 0.F;
+
+    const float HALF = workspacePitch * T / 2.F;
+    return workspaceIdx >= *insertSlot ? HALF : -HALF;
 }
 
 float CScrollOverview::workspaceOverviewAlpha(size_t workspaceIdx) const {
@@ -2657,6 +2715,9 @@ void CScrollOverview::updateWindowDrag() {
     if (!dragActiveWindow)
         return;
 
+    updateInsertSlot();
+    updateDragAutoScroll();
+
     for (const auto& overview : scrollOverviews()) {
         if (!overview)
             continue;
@@ -2664,6 +2725,224 @@ void CScrollOverview::updateWindowDrag() {
         overview->requestInputFrame();
         overview->damage();
     }
+}
+
+
+// ── drag-to-insert ─────────────────────────────────────────────────────────────────────
+// Which slot the point falls in, where slot i means "between card i-1 and card i" and
+// images.size() means "after the last card". Returns nothing while the point is over a card,
+// which is the existing drop-onto-a-workspace case.
+std::optional<size_t> CScrollOverview::insertSlotAtOverviewPoint(const Vector2D& point) const {
+    const auto MONITOR = pMonitor.lock();
+    if (!MONITOR || images.empty())
+        return std::nullopt;
+
+    const float  SCALE     = std::max<float>(scale->value(), 0.01F);
+    const float  PITCH     = getWorkspaceRenderedPitch(MONITOR, SCALE, layout);
+    const size_t ACTIVEIDX = activeWorkspaceIndex();
+    const double AXIS      = axisValue(point, layout);
+
+    const auto boxFor = [&](size_t idx) {
+        return getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), workspaceOverviewOffset(idx, ACTIVEIDX, PITCH), layout);
+    };
+
+    // require the pointer to be roughly at card height (or width, when vertical) so that
+    // flinging a window at the top of the screen is not read as an insert
+    const auto  FIRSTBOX  = boxFor(0);
+    const auto  CROSSPOS  = layout == ScrollOverview::Config::ELayout::HORIZONTAL ? point.y : point.x;
+    const auto  CROSSMIN  = layout == ScrollOverview::Config::ELayout::HORIZONTAL ? FIRSTBOX.y : FIRSTBOX.x;
+    const auto  CROSSSIZE = layout == ScrollOverview::Config::ELayout::HORIZONTAL ? FIRSTBOX.height : FIRSTBOX.width;
+    const auto  CROSSSLACK = CROSSSIZE * 0.5;
+    if (CROSSPOS < CROSSMIN - CROSSSLACK || CROSSPOS > CROSSMIN + CROSSSIZE + CROSSSLACK)
+        return std::nullopt;
+
+    for (size_t i = 0; i < images.size(); ++i) {
+        const auto   BOX   = boxFor(i);
+        const double START = axisValue(BOX.pos(), layout);
+        const double END   = START + axisSize(BOX.size(), layout);
+
+        if (AXIS < START)
+            return i; // before this card: either the leading edge or the gap behind it
+        if (AXIS <= END)
+            return std::nullopt; // over a card
+    }
+
+    return images.size(); // past the last card
+}
+
+// The id a new workspace in this slot would take. Hyprland keeps workspaces in numeric order,
+// so a slot between two cards needs a free number between their ids -- with none, the insert
+// is refused rather than renumbering everything after it (which would mean bulk-moving
+// windows). New workspaces at either end are spaced out by INSERT_ID_STEP so that later
+// inserts next to them do have room.
+std::optional<WORKSPACEID> CScrollOverview::insertSlotWorkspaceID(size_t slot) const {
+    static constexpr WORKSPACEID INSERT_ID_STEP = 10;
+
+    if (images.empty() || slot > images.size())
+        return std::nullopt;
+
+    const auto idAt = [this](size_t idx) -> WORKSPACEID { return images[idx]->pWorkspace->m_id; };
+
+    const auto TAKEN = [](WORKSPACEID id) {
+        for (const auto& w : State::workspaceState()->workspaces()) {
+            const auto WORKSPACE = w.lock();
+            if (WORKSPACE && WORKSPACE->m_id == id)
+                return true;
+        }
+        return false;
+    };
+
+    if (slot == images.size()) { // after the last card
+        const auto BASE = idAt(images.size() - 1);
+        for (WORKSPACEID id = BASE + INSERT_ID_STEP; id > BASE; --id) {
+            if (!TAKEN(id))
+                return id;
+        }
+        return std::nullopt;
+    }
+
+    const auto RIGHT = idAt(slot);
+
+    if (slot == 0) { // before the first card
+        for (WORKSPACEID id = std::max<WORKSPACEID>(1, RIGHT - INSERT_ID_STEP); id < RIGHT; ++id) {
+            if (!TAKEN(id))
+                return id;
+        }
+        return std::nullopt;
+    }
+
+    const auto LEFT = idAt(slot - 1);
+    if (RIGHT - LEFT <= 1)
+        return std::nullopt; // numerically adjacent: no room, refuse
+
+    // midpoint, so a later insert on either side still has numbers to work with
+    const auto MID = LEFT + (RIGHT - LEFT) / 2;
+    for (WORKSPACEID id = MID; id > LEFT; --id) {
+        if (!TAKEN(id))
+            return id;
+    }
+    for (WORKSPACEID id = MID + 1; id < RIGHT; ++id) {
+        if (!TAKEN(id))
+            return id;
+    }
+
+    return std::nullopt;
+}
+
+void CScrollOverview::updateInsertSlot() {
+    if (!dragActiveWindow || closing) {
+        clearInsertSlot();
+        return;
+    }
+
+    auto slot = insertSlotAtOverviewPoint(lastMousePosLocal);
+
+    // a slot with no free workspace number cannot be inserted into, so do not offer it
+    if (slot && !insertSlotWorkspaceID(*slot))
+        slot.reset();
+
+    if (slot == insertSlot)
+        return;
+
+    insertSlot = slot;
+    *insertSlotSpread = insertSlot ? 1.F : 0.F;
+    damage();
+}
+
+void CScrollOverview::clearInsertSlot() {
+    if (!insertSlot)
+        return;
+
+    insertSlot.reset();
+    if (insertSlotSpread)
+        *insertSlotSpread = 0.F;
+    damage();
+}
+
+// Create the workspace for the slot currently under the pointer. The caller then drops the
+// window into it through the normal move-to-workspace path.
+PHLWORKSPACE CScrollOverview::createInsertSlotWorkspace() {
+    const auto MONITOR = pMonitor.lock();
+    if (!MONITOR || !insertSlot)
+        return nullptr;
+
+    const auto ID = insertSlotWorkspaceID(*insertSlot);
+    if (!ID)
+        return nullptr;
+
+    return State::workspaceState()->create(*ID, MONITOR->m_id, std::to_string(*ID), true);
+}
+
+// ── drag auto-scroll ──────────────────────────────────────────────────────────────────
+// Holding a dragged window near either end of the screen scrolls the carousel, so the first
+// and last slots stay reachable no matter which card the drag started on. A timer drives it
+// because a finger parked at the edge stops producing motion events.
+void CScrollOverview::updateDragAutoScroll() {
+    const auto MONITOR = pMonitor.lock();
+    if (!dragActiveWindow || closing || !MONITOR) {
+        stopDragAutoScroll();
+        return;
+    }
+
+    const double VIEWPORT = axisSize(MONITOR->m_size * MONITOR->m_scale, layout);
+    const double ZONE     = std::min(200.0, VIEWPORT * 0.12);
+    const double AXIS     = axisValue(lastMousePosLocal, layout);
+
+    // viewOffset is subtracted when placing cards, so a POSITIVE offset slides the carousel
+    // left, i.e. brings the workspaces after this one into view. At the trailing edge that is
+    // what we want; at the leading edge the sign flips.
+    double speed = 0.0;
+    if (AXIS < ZONE)
+        speed = -(ZONE - AXIS) / ZONE;
+    else if (AXIS > VIEWPORT - ZONE)
+        speed = (AXIS - (VIEWPORT - ZONE)) / ZONE;
+
+    if (speed == 0.0) {
+        stopDragAutoScroll();
+        return;
+    }
+
+    // up to ~14 rendered px per 16ms tick at the very edge (~0.8 of a card per second)
+    dragAutoScrollSpeed = std::clamp(speed, -1.0, 1.0) * 14.0;
+
+    if (dragAutoScrollArmed || !dragAutoScrollTimer)
+        return;
+
+    dragAutoScrollArmed = true;
+    wl_event_source_timer_update(dragAutoScrollTimer, 16);
+}
+
+void CScrollOverview::stopDragAutoScroll() {
+    dragAutoScrollSpeed = 0.0;
+
+    if (!dragAutoScrollArmed)
+        return;
+
+    dragAutoScrollArmed = false;
+    if (dragAutoScrollTimer)
+        wl_event_source_timer_update(dragAutoScrollTimer, 0);
+}
+
+int CScrollOverview::dragAutoScrollTimerCallback(void* data) {
+    auto* const OVERVIEW = sc<CScrollOverview*>(data);
+    if (!OVERVIEW)
+        return 0;
+
+    OVERVIEW->dragAutoScrollArmed = false;
+
+    if (!OVERVIEW->dragActiveWindow || OVERVIEW->closing || OVERVIEW->dragAutoScrollSpeed == 0.0)
+        return 0;
+
+    OVERVIEW->followWorkspaceScroll(OVERVIEW->dragAutoScrollSpeed);
+    OVERVIEW->lastMousePosLocal = getOverviewMousePosLocal(OVERVIEW->pMonitor.lock());
+    OVERVIEW->updateInsertSlot();
+    OVERVIEW->requestInputFrame();
+
+    OVERVIEW->dragAutoScrollArmed = true;
+    if (OVERVIEW->dragAutoScrollTimer)
+        wl_event_source_timer_update(OVERVIEW->dragAutoScrollTimer, 16);
+
+    return 0;
 }
 
 void CScrollOverview::updateWindowResize() {
@@ -2701,6 +2980,12 @@ void CScrollOverview::updateWindowResize() {
 }
 
 void CScrollOverview::clearDragPending() {
+    clearInsertSlot();
+    stopDragAutoScroll();
+    // auto-scrolling during the drag leaves the carousel parked between cards; snap it, which
+    // also makes the card the drag ended on the active one
+    if (trackpadWorkspaceFollowing)
+        finishWorkspaceScrollFollow();
     dragPendingPrimary          = false;
     dragActiveWindow.reset();
     dragOriginalWorkspace.reset();
@@ -2991,7 +3276,21 @@ void CScrollOverview::endWindowDrag() {
     const auto          DROPPOINTLOCAL    = getOverviewMousePosLocal(DROPMONITOR);
     const bool          RETILEONEND       = dragStartedTiled && TARGET && SPACE && ALGO;
     size_t              dropWorkspaceIdx  = 0;
-    const auto          DROPWORKSPACE     = dropOverview ? dropOverview->workspaceAtOverviewDropPoint(DROPPOINTLOCAL, &dropWorkspaceIdx, WINDOW) : PHLWORKSPACE{};
+    auto                DROPWORKSPACE     = dropOverview ? dropOverview->workspaceAtOverviewDropPoint(DROPPOINTLOCAL, &dropWorkspaceIdx, WINDOW) : PHLWORKSPACE{};
+
+    // Nothing under the pointer, but the pointer is in an insert slot (a gap between cards, or
+    // past either end): create the workspace for that slot and drop into it. Everything below
+    // then runs the ordinary move-to-another-workspace path.
+    bool INSERTEDNEWWORKSPACE = false;
+    if (!DROPWORKSPACE && dropOverview) {
+        DROPWORKSPACE = dropOverview->createInsertSlotWorkspace();
+        if (DROPWORKSPACE) {
+            INSERTEDNEWWORKSPACE = true;
+            // images has not been rebuilt yet, so dropWorkspaceIdx does not address the new
+            // card; the flag keeps the index-dependent geometry below from being used.
+            dropWorkspaceIdx = 0;
+        }
+    }
     const auto          DROPSCROLLINGALGO  = overviewScrollingAlgorithmForWorkspace(DROPWORKSPACE);
     const bool          DROPSCROLLINGLAYOUT = DROPSCROLLINGALGO != nullptr;
     const bool          DROPSCROLLINGPRIMARYHORIZONTAL =
@@ -3046,7 +3345,7 @@ void CScrollOverview::endWindowDrag() {
                                     dropOverview->workspaceOverviewOffset(dropWorkspaceIdx, dropOverview->activeWorkspaceIndex(),
                                                                          getWorkspaceRenderedPitch(DROPMONITOR, dropOverview->scale->value(), dropOverview->layout)),
                                     dropOverview->layout);
-        dropWorkspaceFullyVisible = overviewBoxFullyVisibleOnMonitor(WORKSPACEBOX, DROPMONITOR);
+        dropWorkspaceFullyVisible = !INSERTEDNEWWORKSPACE && overviewBoxFullyVisibleOnMonitor(WORKSPACEBOX, DROPMONITOR);
 
         if (DROPSIDEHORIZONTAL) {
             if (DROPPOINTLOCAL.x < WORKSPACEBOX.x)
@@ -3061,7 +3360,7 @@ void CScrollOverview::endWindowDrag() {
         }
     }
 
-    if (DROPWORKSPACE) {
+    if (DROPWORKSPACE && !INSERTEDNEWWORKSPACE) {
         dropOverview->lastMousePosLocal = DROPPOINTLOCAL;
         dropAnchor                      = dropOverview->dropAnchorAtOverviewCursorOnWorkspace(dropWorkspaceIdx, WINDOW, this);
     }
@@ -3172,6 +3471,8 @@ void CScrollOverview::endWindowDrag() {
     }
 
     clearDragPending();
+    if (dropOverview && dropOverview != this)
+        dropOverview->clearInsertSlot();
     rebuildPending = true;
     damage();
     if (dropOverview != this) {
@@ -5149,6 +5450,18 @@ void CScrollOverview::render() {
 
     for (size_t workspaceIdx = 0; workspaceIdx < images.size(); ++workspaceIdx) {
         renderWorkspaceLive(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
+    }
+
+    if (insertSlot && insertSlotSpread) {
+        const float SLOTALPHA = std::clamp(insertSlotSpread->value(), 0.F, 1.F);
+        // the hole sits one pitch before the card that follows it (or after the last card)
+        const bool   PASTEND  = *insertSlot >= images.size();
+        const size_t ANCHOR   = PASTEND ? images.size() - 1 : *insertSlot;
+        const auto   ANCHORBOX = getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), workspaceOverviewOffset(ANCHOR, ACTIVEIDX, PITCH), layout);
+        const auto   SLOTBOX   = ANCHORBOX.copy().translate(axisOffsetVector(PASTEND ? PITCH : -PITCH, layout));
+
+        if (overviewBoxIntersectsMonitor(SLOTBOX, MONITOR))
+            renderOverviewInsertSlot(MONITOR, SLOTBOX, SLOTALPHA);
     }
 
     renderDraggedWindow(MONITOR, ACTIVEIDX, PITCH, SCALE, NOW);
