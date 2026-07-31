@@ -278,9 +278,14 @@ Fixed: `onWorkspaceChange()` skips the re-fit while `dragActiveWindow` is set, a
 
 ---
 
-## F15 — Cannot insert before a workspace whose id is 1 — KNOWN LIMIT
+## F15 — The first leading insert blocked all later ones ✓ FIXED (fork) — severity A
 
-`insertSlotWorkspaceID(0)` needs a free number *below* the first workspace, and there is nothing
-below 1. So the leading slot is legitimately blocked (red cue) whenever the row starts at id 1.
-`ws-index.sh respace` starts the row at 1000, which leaves 999 free numbers below it; ids 1 and 250
-seen on this machine were leftovers from testing, not from a respace.
+`insertSlotWorkspaceID(0)` picked `first_id - INSERT_ID_STEP`, clamped to at least 1. With a row
+starting at 1000 and a step of 1000 that clamps to exactly **id 1** — so the very first insert
+before the first card landed on 1, and from then on the row started at 1 with nothing below it, so
+every later leading insert was blocked and drew the red cue. A one-way door, self-inflicted, and it
+is what the user hit twice (ids 1 and 250 were not test leftovers after all: 1 came from a leading
+insert).
+
+Fixed: the leading slot bisects downward like every interior gap (first_id / 2, then search down and
+up), so 1000 -> 500 -> 250 -> ... and id 1 is only reached after ~10 leading inserts.

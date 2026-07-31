@@ -2888,7 +2888,15 @@ std::optional<WORKSPACEID> CScrollOverview::insertSlotWorkspaceID(size_t slot) c
     const auto RIGHT = idAt(slot);
 
     if (slot == 0) { // before the first card
-        for (WORKSPACEID id = std::max<WORKSPACEID>(1, RIGHT - INSERT_ID_STEP); id < RIGHT; ++id) {
+        // Halve the space below, the same rule the interior gaps use. Taking RIGHT - STEP clamped
+        // to 1 put the very first leading insert on id 1, and with the row then starting at 1 there
+        // is nothing below it, so every later leading insert was blocked -- a one-way door.
+        const auto MID = RIGHT / 2;
+        for (WORKSPACEID id = MID; id >= 1; --id) {
+            if (!TAKEN(id))
+                return id;
+        }
+        for (WORKSPACEID id = MID + 1; id < RIGHT; ++id) {
             if (!TAKEN(id))
                 return id;
         }
