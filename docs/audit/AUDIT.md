@@ -247,3 +247,40 @@ gives ~10 nested inserts per gap by bisection, and `ws-index.sh respace` re-flat
 1000, 2000, 3000 … whenever it gets tight. Verified: repeated drag-inserts into one gap
 (5000|6000 → 5500 → 5750), and the whole row respaced from 1, 10, 25, 60 to 1000, 2000, 3000, 4000
 with window order preserved.
+
+---
+
+## F13 — Insert worked on one side of a card but not the other ✓ FIXED (fork) — severity A
+
+Reported as "sometimes the left side drag inserts but the right does not, sometimes the opposite".
+
+`endWindowDrag()` resolved the drop target in the wrong order: `workspaceAtOverviewDropPoint()`
+first, and the insert slot only if that came back empty. That card hit-test runs on the **spread**
+card positions, and the spread pushes cards away from the open slot in *opposite directions on
+either side*, so a card could claim a point the user could plainly see was inside the open slot.
+The insert was then skipped and the drag silently became a plain move onto that card — on one side
+only, and which side depended on where the slot had opened. Hence "sometimes the opposite".
+
+Fixed: an open, non-blocked slot now takes priority over a card hit. What is drawn under the cursor
+is what the drop uses. Verified: left, right, then left again, all inserting (8500 / 9500 / 8750).
+
+---
+
+## F14 — Adaptive scale re-fitted mid-drag ✓ FIXED (fork) — severity B
+
+Raised by the user: "dynamic workspace overview scaling might bite us cause it expands". Correct —
+completing an insert adds a workspace, which re-fits the scale (F7), which resizes and reflows every
+card while the pointer is still down. Same failure family as the spread moving cards under the
+cursor.
+
+Fixed: `onWorkspaceChange()` skips the re-fit while `dragActiveWindow` is set, and
+`clearDragPending()` re-fits once, after the gesture ends.
+
+---
+
+## F15 — Cannot insert before a workspace whose id is 1 — KNOWN LIMIT
+
+`insertSlotWorkspaceID(0)` needs a free number *below* the first workspace, and there is nothing
+below 1. So the leading slot is legitimately blocked (red cue) whenever the row starts at id 1.
+`ws-index.sh respace` starts the row at 1000, which leaves 999 free numbers below it; ids 1 and 250
+seen on this machine were leftovers from testing, not from a respace.

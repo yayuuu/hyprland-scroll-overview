@@ -3109,6 +3109,10 @@ void CScrollOverview::updateWindowResize() {
 void CScrollOverview::clearDragPending() {
     clearInsertSlot();
     stopDragAutoScroll();
+
+    // the drag is over, so it is safe to re-fit for any workspace it added or emptied
+    if (!closing && scale && std::abs(scale->goal() - targetScale()) > 0.001F)
+        *scale = targetScale();
     // auto-scrolling during the drag leaves the carousel parked between cards; snap it, which
     // also makes the card the drag ended on the active one
     if (trackpadWorkspaceFollowing)
@@ -3405,10 +3409,25 @@ void CScrollOverview::endWindowDrag() {
     size_t              dropWorkspaceIdx  = 0;
     auto                DROPWORKSPACE     = dropOverview ? dropOverview->workspaceAtOverviewDropPoint(DROPPOINTLOCAL, &dropWorkspaceIdx, WINDOW) : PHLWORKSPACE{};
 
-    // Nothing under the pointer, but the pointer is in an insert slot (a gap between cards, or
-    // past either end): create the workspace for that slot and drop into it. Everything below
-    // then runs the ordinary move-to-another-workspace path.
+    // The pointer is in an insert slot (a gap between cards, or past either end): create the
+    // workspace for that slot and drop into it. Everything below then runs the ordinary
+    // move-to-another-workspace path.
+    //
+    // An open slot WINS over a card hit. The card hit-test above runs on the spread positions,
+    // and the spread pushes cards away from the slot in opposite directions on either side, so a
+    // card could claim a point that is visibly inside the open slot -- which made inserting work
+    // on one side and silently turn into a plain move on the other, and swap sides depending on
+    // where the slot was. What is drawn under the cursor is what the drop must use.
     bool INSERTEDNEWWORKSPACE = false;
+    const bool SLOTOPEN = dropOverview && dropOverview->insertSlot.has_value() && !dropOverview->insertSlotBlocked;
+    if (SLOTOPEN && DROPWORKSPACE) {
+        if (const auto INSERTED = dropOverview->createInsertSlotWorkspace()) {
+            DROPWORKSPACE        = INSERTED;
+            INSERTEDNEWWORKSPACE = true;
+            dropWorkspaceIdx     = 0;
+        }
+    }
+
     if (!DROPWORKSPACE && dropOverview) {
         DROPWORKSPACE = dropOverview->createInsertSlotWorkspace();
         if (DROPWORKSPACE) {
@@ -5494,8 +5513,11 @@ void CScrollOverview::onWorkspaceChange() {
     redrawAll();
     viewportCurrentWorkspace = activeWorkspaceIndex();
 
-    // a workspace appeared or vanished: re-fit so the row still shows everything it can
-    if (!closing && !m_isSwiping)
+    // A workspace appeared or vanished: re-fit so the row still shows everything it can -- but
+    // never while a drag is in flight. Completing an insert adds a card, and re-fitting then
+    // resizes and reflows every card under the pointer mid-gesture. clearDragPending() re-fits
+    // once the drag is over.
+    if (!closing && !m_isSwiping && !dragActiveWindow)
         *scale = targetScale();
 
     const bool REMOVEDPREVIOUSWORKSPACE =
