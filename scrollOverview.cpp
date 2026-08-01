@@ -1821,6 +1821,10 @@ void CScrollOverview::rebuildWorkspaceImages() {
         if (WORKSPACE == REMOVEDWORKSPACE)
             continue;
 
+        if (ScrollOverview::Config::getValue<bool>("plugin:scrolloverview:hide_empty_workspaces") && WORKSPACE != pMonitor->m_activeWorkspace &&
+            !WORKSPACE->isPersistent() && WORKSPACE->getWindowCount() == 0)
+            continue;
+
         images.emplace_back(makeShared<SWorkspaceImage>(WORKSPACE));
     }
 
