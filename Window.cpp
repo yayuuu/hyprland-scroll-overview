@@ -9,8 +9,8 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/view/Popup.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
@@ -164,7 +164,7 @@ struct SOverviewPseudoFocusState {
             focusState->m_focusSurface = pseudoFocusWindow->wlSurface()->resource();
 
         const bool ISACTIVE    = window == pseudoFocusWindow;
-        const bool GROUPLOCKED = window->m_group ? window->m_group->locked() || g_pKeybindManager->m_groupsLocked : g_pKeybindManager->m_groupsLocked;
+        const bool GROUPLOCKED = (window->m_group && window->m_group->locked()) || Desktop::windowState()->groupsLocked();
         const bool NOGROUP     = window->m_groupRules & Desktop::View::GROUP_DENY;
         const auto BORDERKEY   = window->m_group ?
             (ISACTIVE ? (GROUPLOCKED ? "group:col.border_locked_active" : "group:col.border_active") :
@@ -670,7 +670,7 @@ static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW
     if (PINDICATORHEIGHT <= 0)
         return;
 
-    const bool  groupLocked  = window->m_group->locked() || g_pKeybindManager->m_groupsLocked;
+    const bool  groupLocked  = window->m_group->locked() || Desktop::windowState()->groupsLocked();
     const auto  groupWindows = window->m_group->windows();
     const auto  focusedWindow = Desktop::focusState()->window();
     const float indicatorH   = sc<float>(PINDICATORHEIGHT) * metrics.pxScale;
@@ -747,7 +747,7 @@ static void renderOverviewGroupTabTitles(PHLMONITOR monitor, const PHLWINDOW& wi
     if (!PRENDERTITLES || PHEIGHT <= 0)
         return;
 
-    const bool  groupLocked  = window->m_group->locked() || g_pKeybindManager->m_groupsLocked;
+    const bool  groupLocked  = window->m_group->locked() || Desktop::windowState()->groupsLocked();
     const auto  groupWindows = window->m_group->windows();
     const auto  focusedWindow = Desktop::focusState()->window();
     const float outerGap     = sc<float>(POUTERGAP) * metrics.pxScale;

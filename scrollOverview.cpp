@@ -25,7 +25,7 @@
 #include <hyprland/src/animation/AnimationManager.hpp>
 #include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
+#include <hyprland/src/keybinds/Manager.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
@@ -76,6 +76,16 @@ static CScrollOverview*             g_pointerGrabOverview = nullptr;
 static std::unordered_set<uint32_t> g_topLayerPointerButtons;
 static PHLWINDOWREF                 g_pseudoFocusedWindow;
 static Time::steady_tp              g_pseudoFocusUntil = {};
+static std::optional<uint32_t>       g_pendingMouseAxisBindTimeMs;
+
+bool consumeOverviewMouseAxisBind(uint32_t lastInputTimeMs) {
+    if (!g_pendingMouseAxisBindTimeMs)
+        return false;
+
+    const auto AXISTIMEMS = *g_pendingMouseAxisBindTimeMs;
+    g_pendingMouseAxisBindTimeMs.reset();
+    return static_cast<int32_t>(AXISTIMEMS - lastInputTimeMs) >= 0;
+}
 
 static void restoreActiveWorkspaceVisibility() {
     for (const auto& monitor : State::monitorState()->monitors()) {
@@ -133,15 +143,15 @@ static xkb_keysym_t getOverviewKeysym(const IKeyboard::SKeyEvent& event) {
 }
 
 static bool hasOverviewSubmap() {
-    return g_pKeybindManager && std::ranges::any_of(g_pKeybindManager->m_keybinds, [](const auto& keybind) { return keybind && keybind->submap.name == OVERVIEW_SUBMAP; });
+    return Keybinds::mgr() && Keybinds::mgr()->registry().hasSubmap(OVERVIEW_SUBMAP);
 }
 
 static bool isOverviewSubmapActive() {
-    return g_pKeybindManager && g_pKeybindManager->getCurrentSubmap().name == OVERVIEW_SUBMAP;
+    return Keybinds::mgr() && Keybinds::mgr()->currentSubmap() == OVERVIEW_SUBMAP;
 }
 
 static bool hasMatchingScrollKeybind(const IPointer::SAxisEvent& event) {
-    if (!g_pKeybindManager || !g_pInputManager || event.source != WL_POINTER_AXIS_SOURCE_WHEEL || event.delta == 0.0)
+    if (!Keybinds::mgr() || !g_pInputManager || event.source != WL_POINTER_AXIS_SOURCE_WHEEL || event.delta == 0.0)
         return false;
 
     std::string key;
@@ -152,12 +162,18 @@ static bool hasMatchingScrollKeybind(const IPointer::SAxisEvent& event) {
     else
         return false;
 
-    const auto MODS = g_pInputManager->getModsFromAllKBs();
-    const auto SUBMAP = g_pKeybindManager->getCurrentSubmap();
-    return std::ranges::any_of(g_pKeybindManager->m_keybinds, [&](const auto& keybind) {
-        return keybind && keybind->enabled && !keybind->shadowed && keybind->key == key && (keybind->modmask == MODS || keybind->ignoreMods) &&
-            (keybind->submap.name == SUBMAP.name || keybind->submapUniversal);
+    const auto MODS    = g_pInputManager->getModsFromAllKBs();
+    const auto SUBMAP  = Keybinds::mgr()->currentSubmap();
+    const auto MATCHES = std::ranges::any_of(Keybinds::mgr()->registry().binds(), [&](const auto& keybind) {
+        return keybind && keybind->enabled() && std::ranges::contains(keybind->keyNames(), key) &&
+            (keybind->modifierMask() == MODS || keybind->hasFlag(Keybinds::BIND_FLAG_IGNORE_MODS)) &&
+            (keybind->metadata().submap == SUBMAP || keybind->hasFlag(Keybinds::BIND_FLAG_SUBMAP_UNIVERSAL));
     });
+
+    if (MATCHES)
+        g_pendingMouseAxisBindTimeMs = event.timeMs;
+
+    return MATCHES;
 }
 
 static bool isTopLayerFocused(PHLMONITOR monitor) {
@@ -1509,11 +1525,12 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
             return;
 
         const auto KEYSYM = getOverviewKeysym(event);
-        const auto MODS   = g_pInputManager->getModsFromAllKBs() & ~(HL_MODIFIER_CAPS | HL_MODIFIER_MOD2);
+        const auto IGNOREDMODS = Input::HL_MODIFIER_CAPS | Input::HL_MODIFIER_MOD2;
+        const auto MODS = sc<Input::ModifierMask>(sc<uint8_t>(g_pInputManager->getModsFromAllKBs()) & ~sc<uint8_t>(IGNOREDMODS));
 
         if ((KEYSYM == XKB_KEY_Return || KEYSYM == XKB_KEY_KP_Enter || KEYSYM == XKB_KEY_Left || KEYSYM == XKB_KEY_KP_Left || KEYSYM == XKB_KEY_Right ||
              KEYSYM == XKB_KEY_KP_Right || KEYSYM == XKB_KEY_Up || KEYSYM == XKB_KEY_KP_Up || KEYSYM == XKB_KEY_Down || KEYSYM == XKB_KEY_KP_Down) &&
-            MODS != 0)
+            MODS != Input::HL_MODIFIER_NONE)
             return;
 
         switch (KEYSYM) {
@@ -1636,7 +1653,7 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
         lastBackdropWallpaperMode = wallpaperMode;
     }
 
-    const auto FBSIZE     = monitor->m_pixelSize;
+    const auto FBSIZE     = monitor->m_transformedSize;
     const auto RENDERSIZE = monitor->m_transformedSize;
     const auto FBFORMAT   = g_pHyprRenderer->m_renderData.currentFB->m_drmFormat;
     if (!backdropBlurFB)
@@ -1665,8 +1682,12 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
         OverviewRender::flushPass(monitor);
     }
 
-    auto blurDamage = fullDamage;
-    const auto BLURREDTEX = g_pHyprRenderer->blurFramebuffer(backdropBlurFB, 1.F, &blurDamage);
+    auto         blurDamage = fullDamage;
+    SP<Render::ITexture> BLURREDTEX;
+    {
+        auto bindBackdrop = g_pHyprRenderer->bindTempFB(backdropBlurFB);
+        BLURREDTEX        = g_pHyprRenderer->blurMainFramebuffer(1.F, &blurDamage);
+    }
     if (!BLURREDTEX || !BLURREDTEX->m_size.x || !BLURREDTEX->m_size.y)
         return;
 
@@ -2411,8 +2432,8 @@ void CScrollOverview::selectHoveredWorkspace() {
 }
 
 bool CScrollOverview::windowDispatcherAction(const std::string& action) {
-    const auto CURRENTKEYBIND = g_pKeybindManager ? g_pKeybindManager->m_currentKeybind : SP<SKeybind>{};
-    const bool FROMMOUSEBIND  = CURRENTKEYBIND && CURRENTKEYBIND->key.starts_with("mouse:");
+    const auto& ACTIONSTATE  = Config::Actions::state();
+    const bool FROMMOUSEBIND = ACTIONSTATE && ACTIONSTATE->m_bindInvocationDepth > 0 && ACTIONSTATE->m_lastCode == 0 && ACTIONSTATE->m_lastMouseCode != 0;
 
     PHLWINDOW WINDOW;
     size_t    workspaceIdx = viewportCurrentWorkspace;
@@ -5174,10 +5195,10 @@ void CScrollOverview::releaseInputListeners() {
 }
 
 void CScrollOverview::activateSubmapIfConfigured() {
-    if (!sharedStateOwner || !usesSubmapKeybinds || !g_pKeybindManager)
+    if (!sharedStateOwner || !usesSubmapKeybinds || !Keybinds::mgr())
         return;
 
-    previousSubmapName = g_pKeybindManager->getCurrentSubmap().name;
+    previousSubmapName = Keybinds::mgr()->currentSubmap();
 
     const auto RESULT = Config::Actions::setSubmap(OVERVIEW_SUBMAP);
     if (!RESULT) {
@@ -5189,10 +5210,10 @@ void CScrollOverview::activateSubmapIfConfigured() {
 }
 
 void CScrollOverview::restoreSubmapIfActive() {
-    if (!submapActive || !g_pKeybindManager)
+    if (!submapActive || !Keybinds::mgr())
         return;
 
-    const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
+    const auto CURRENT = Keybinds::mgr()->currentSubmap();
     if (CURRENT == OVERVIEW_SUBMAP) {
         (void)Config::Actions::setSubmap(previousSubmapName.empty() ? "reset" : previousSubmapName);
     }
@@ -5201,32 +5222,42 @@ void CScrollOverview::restoreSubmapIfActive() {
 }
 
 bool CScrollOverview::dispatchSubmapMouseClick(uint32_t button) {
-    if (!usesSubmapKeybinds || !isOverviewSubmapActive() || !g_pKeybindManager || !g_pInputManager)
+    if (!usesSubmapKeybinds || !isOverviewSubmapActive() || !Keybinds::mgr() || !g_pInputManager)
         return false;
 
     const auto KEYNAME = "mouse:" + std::to_string(button);
     const auto MODS    = g_pInputManager->getModsFromAllKBs();
+    const auto BINDS   = Keybinds::mgr()->registry().binds();
 
-    const auto KEYBIND = std::ranges::find_if(g_pKeybindManager->m_keybinds, [&](const auto& keybind) {
-        return keybind && keybind->enabled && !keybind->shadowed && keybind->key == KEYNAME && keybind->submap.name == OVERVIEW_SUBMAP &&
-            (keybind->modmask == MODS || keybind->ignoreMods);
+    const auto KEYBIND = std::ranges::find_if(BINDS, [&](const auto& keybind) {
+        return keybind && keybind->enabled() && keybind->metadata().submap == OVERVIEW_SUBMAP &&
+            std::ranges::contains(keybind->keyNames(), KEYNAME) &&
+            (keybind->modifierMask() == MODS || keybind->hasFlag(Keybinds::BIND_FLAG_IGNORE_MODS));
     });
 
-    if (KEYBIND == g_pKeybindManager->m_keybinds.end())
+    if (KEYBIND == BINDS.end())
         return false;
 
-    const auto INDEX = Hyprutils::String::strToNumber<int>((*KEYBIND)->arg);
+    const auto INDEX = Hyprutils::String::strToNumber<int>((*KEYBIND)->metadata().argument);
     const auto MGR   = Config::Lua::mgr();
     if (!INDEX || !MGR)
         return false;
 
-    const auto PREVIOUSKEYBIND = g_pKeybindManager->m_currentKeybind;
-    g_pKeybindManager->m_currentKeybind = *KEYBIND;
-    auto restoreKeybind = Hyprutils::Utils::CScopeGuard([PREVIOUSKEYBIND] { g_pKeybindManager->m_currentKeybind = PREVIOUSKEYBIND; });
-
-    const int PREVIOUSPASSPRESSED = Config::Actions::state()->m_passPressed;
-    Config::Actions::state()->m_passPressed = 0;
-    auto restorePassPressed = Hyprutils::Utils::CScopeGuard([PREVIOUSPASSPRESSED] { Config::Actions::state()->m_passPressed = PREVIOUSPASSPRESSED; });
+    auto&      actionState          = *Config::Actions::state();
+    const int PREVIOUSPASSPRESSED   = actionState.m_passPressed;
+    const int PREVIOUSDEPTH         = actionState.m_bindInvocationDepth;
+    const uint32_t PREVIOUSCODE     = actionState.m_lastCode;
+    const uint32_t PREVIOUSMOUSECODE = actionState.m_lastMouseCode;
+    actionState.m_passPressed        = 0;
+    actionState.m_bindInvocationDepth++;
+    actionState.m_lastCode      = 0;
+    actionState.m_lastMouseCode = button;
+    auto restoreActionState = Hyprutils::Utils::CScopeGuard([&actionState, PREVIOUSPASSPRESSED, PREVIOUSDEPTH, PREVIOUSCODE, PREVIOUSMOUSECODE] {
+        actionState.m_passPressed         = PREVIOUSPASSPRESSED;
+        actionState.m_bindInvocationDepth = PREVIOUSDEPTH;
+        actionState.m_lastCode            = PREVIOUSCODE;
+        actionState.m_lastMouseCode       = PREVIOUSMOUSECODE;
+    });
 
     const auto RESULT = MGR->callLuaFnBind(*INDEX);
     return RESULT.success;

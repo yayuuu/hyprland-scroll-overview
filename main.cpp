@@ -7,15 +7,16 @@
 #include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/event/EventBus.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/managers/input/trackpad/GestureTypes.hpp>
 #include <hyprland/src/managers/input/trackpad/TrackpadGestures.hpp>
+#include <hyprland/src/keybinds/Resolver.hpp>
 
 #include <hyprutils/string/ConstVarList.hpp>
 using namespace Hyprutils::String;
@@ -226,8 +227,11 @@ static std::vector<PHLMONITOR> overviewTargetMonitors(const std::string& target)
 }
 
 static SP<IOverview> dispatcherOverview() {
-    const auto CURRENTKEYBIND = g_pKeybindManager ? g_pKeybindManager->m_currentKeybind : SP<SKeybind>{};
-    if (CURRENTKEYBIND && CURRENTKEYBIND->key.starts_with("mouse") && g_pInputManager) {
+    const auto& ACTIONSTATE       = Config::Actions::state();
+    const bool  FROMMOUSEAXISBIND = consumeOverviewMouseAxisBind(ACTIONSTATE ? ACTIONSTATE->m_timeLastMs : 0);
+    const bool  FROMMOUSEBIND     = ACTIONSTATE && ACTIONSTATE->m_bindInvocationDepth > 0 &&
+        ((ACTIONSTATE->m_lastCode == 0 && ACTIONSTATE->m_lastMouseCode != 0) || FROMMOUSEAXISBIND);
+    if (FROMMOUSEBIND && g_pInputManager) {
         if (const auto OVERVIEW = scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()))
             return OVERVIEW;
     }
@@ -369,8 +373,8 @@ static void* findFnOrThrow(const std::string& name, std::initializer_list<std::s
 
 // shared core: register / unregister the overview trackpad gesture. used by both the hyprlang
 // keyword and the Lua `scrolloverview.gesture` function so both configure the same gesture system.
-static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount, eTrackpadGestureDirection direction, const std::string& action, uint32_t modMask,
-                                                             float deltaScale, bool disableInhibit) {
+static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount, eTrackpadGestureDirection direction, const std::string& action,
+                                                             Input::ModifierMask modMask, float deltaScale, bool disableInhibit) {
     if (fingerCount <= 1 || fingerCount >= 10)
         return std::unexpected(std::format("Invalid value {} for finger count", fingerCount));
 
@@ -397,9 +401,9 @@ static SDispatchResult onRegisterOverviewGesture(size_t fingerCount, const std::
     if (direction == TRACKPAD_GESTURE_DIR_NONE)
         return {.success = false, .error = std::format("Invalid direction: {}", directionStr)};
 
-    uint32_t modMask = 0;
-    if (!mods.empty() && g_pKeybindManager)
-        modMask = g_pKeybindManager->stringToModMask(mods);
+    Input::ModifierMask modMask = Input::HL_MODIFIER_NONE;
+    if (!mods.empty())
+        modMask = Keybinds::modMaskFromString(mods);
 
     const auto res = applyOverviewGesture(fingerCount, direction, action, modMask, std::clamp(deltaScale, 0.1F, 10.F), disableInhibit);
     if (!res)
@@ -433,14 +437,14 @@ static Hyprlang::CParseResult overviewGestureKeyword(const char* LHS, const char
     }
 
     int      startDataIdx   = 2;
-    uint32_t modMask        = 0;
+    Input::ModifierMask modMask        = Input::HL_MODIFIER_NONE;
     float    deltaScale     = 1.F;
     bool     disableInhibit = false;
 
     while (true) {
 
         if (data[startDataIdx].starts_with("mod:")) {
-            modMask = g_pKeybindManager->stringToModMask(std::string{data[startDataIdx].substr(4)});
+            modMask = Keybinds::modMaskFromString(std::string{data[startDataIdx].substr(4)});
             startDataIdx++;
             continue;
         } else if (data[startDataIdx].starts_with("scale:")) {
