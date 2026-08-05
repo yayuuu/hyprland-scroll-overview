@@ -1674,13 +1674,6 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
         auto bindBackdrop = g_pHyprRenderer->bindTempFB(backdropBlurFB);
         g_pHyprRenderer->draw(CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 0.F}}, fullDamage);
 
-        const auto SAVEDTRANSFORM = BLURREDTEX->m_transform;
-        BLURREDTEX->m_transform   = Math::wlTransformToHyprutils(Math::invertTransform(monitor->m_transform));
-        auto restoreTransform     = Hyprutils::Utils::CScopeGuard([BLURREDTEX, SAVEDTRANSFORM] { BLURREDTEX->m_transform = SAVEDTRANSFORM; });
-
-        g_pHyprRenderer->pushMonitorTransformEnabled(true);
-        auto restoreMonitorTransform = Hyprutils::Utils::CScopeGuard([] { g_pHyprRenderer->popMonitorTransformEnabled(); });
-
         g_pHyprRenderer->draw(
             CTexPassElement::SRenderData{
                 .tex    = BLURREDTEX,
@@ -1702,11 +1695,10 @@ void CScrollOverview::renderBackdropBlurCache(PHLMONITOR monitor) {
 
     g_pHyprRenderer->draw(
         CTexPassElement::SRenderData{
-            .tex      = TEX,
-            .box      = CBox{0, 0, monitor->m_transformedSize.x, monitor->m_transformedSize.y},
-            .a        = 1.F,
-            .damage   = fullDamage,
-            .flipEndFrame = true,
+            .tex    = TEX,
+            .box    = CBox{0, 0, monitor->m_transformedSize.x, monitor->m_transformedSize.y},
+            .a      = 1.F,
+            .damage = fullDamage,
         },
         fullDamage);
 }
