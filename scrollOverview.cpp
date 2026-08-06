@@ -87,6 +87,24 @@ bool consumeOverviewMouseAxisBind(uint32_t lastInputTimeMs) {
     return static_cast<int32_t>(AXISTIMEMS - lastInputTimeMs) >= 0;
 }
 
+static bool changeOverviewWorkspace(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace) {
+    if (!monitor || !workspace || monitor->m_activeWorkspace == workspace)
+        return false;
+
+    const bool FOCUSED = Desktop::focusState()->monitor() == monitor;
+
+    monitor->changeWorkspace(workspace, false, true, true);
+
+    if (!FOCUSED || monitor->m_activeWorkspace != workspace)
+        return true;
+
+    IPC::Socket2::sock()->postEvent({.event = "workspace", .data = workspace->m_name});
+    IPC::Socket2::sock()->postEvent({.event = "workspacev2", .data = std::format("{},{}", workspace->m_id, workspace->m_name)});
+    Event::bus()->m_events.workspace.active.emit(workspace);
+
+    return true;
+}
+
 static void restoreActiveWorkspaceVisibility() {
     for (const auto& monitor : State::monitorState()->monitors()) {
         if (!monitor)
@@ -2425,7 +2443,7 @@ void CScrollOverview::selectHoveredWorkspace() {
     if (pMonitor && pMonitor->m_activeWorkspace != WORKSPACE) {
         if (focusSyncedFromWorkspaceID == WORKSPACE_INVALID)
             focusSyncedFromWorkspaceID = pMonitor->m_activeWorkspace ? pMonitor->m_activeWorkspace->m_id : WORKSPACE_INVALID;
-        pMonitor->changeWorkspace(WORKSPACE, false, true, true);
+        changeOverviewWorkspace(pMonitor.lock(), WORKSPACE);
     }
 
     damage();
@@ -3249,7 +3267,7 @@ void CScrollOverview::moveViewportWorkspace(bool up) {
         closeOnWindow = windowClosestToWorkspaceCenter(viewportCurrentWorkspace);
 
     if (pMonitor && pMonitor->m_activeWorkspace != TARGETWORKSPACEIMAGE->pWorkspace)
-        pMonitor->changeWorkspace(TARGETWORKSPACEIMAGE->pWorkspace, false, true, true);
+        changeOverviewWorkspace(pMonitor.lock(), TARGETWORKSPACEIMAGE->pWorkspace);
 
     damage();
 }
@@ -4838,7 +4856,7 @@ void CScrollOverview::close() {
 
         if (sourceIdx < images.size() && targetIdx < images.size()) {
             if (FINALWORKSPACE != pMonitor->m_activeWorkspace)
-                pMonitor->changeWorkspace(FINALWORKSPACE, false, true, true);
+                changeOverviewWorkspace(pMonitor.lock(), FINALWORKSPACE);
 
             if (ACTIVATESELECTION)
                 Desktop::focusState()->fullWindowFocus(closeOnWindow.lock(), Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
@@ -4872,7 +4890,7 @@ void CScrollOverview::close() {
         }
 
         if (SELECTEDWORKSPACE && SELECTEDWORKSPACE != pMonitor->m_activeWorkspace)
-            pMonitor->changeWorkspace(SELECTEDWORKSPACE, false, true, true);
+            changeOverviewWorkspace(pMonitor.lock(), SELECTEDWORKSPACE);
     } else if (closeOnWindow == Desktop::focusState()->window() && closeOnWindow->m_workspace == pMonitor->m_activeWorkspace) {
         if (focusSyncedFromWorkspaceID != WORKSPACE_INVALID) {
             const auto ACTIVEIDX   = activeWorkspaceIndex();
@@ -4891,7 +4909,7 @@ void CScrollOverview::close() {
     } else {
 
         if (closeOnWindow->m_workspace != pMonitor->m_activeWorkspace)
-            pMonitor->changeWorkspace(closeOnWindow->m_workspace, false, true, true);
+            changeOverviewWorkspace(pMonitor.lock(), closeOnWindow->m_workspace);
 
         if (ACTIVATESELECTION)
             Desktop::focusState()->fullWindowFocus(closeOnWindow.lock(), Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
