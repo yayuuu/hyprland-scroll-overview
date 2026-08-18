@@ -12,6 +12,9 @@
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/Group.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowGroupMembership.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/desktop/view/Popup.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/plugins/PluginSystem.hpp>
@@ -23,10 +26,12 @@
 #include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/types.hpp>
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
+#include <hyprland/src/render/decorations/CHyprBorderDecoration.hpp>
+#include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
 #include <hyprland/src/render/decorations/DecorationPositioner.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
-#include <hyprland/src/protocols/XDGShell.hpp>
+#include <hyprland/src/render/decorations/CHyprBorderDecoration.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 #undef protected
 #undef private
@@ -94,8 +99,8 @@ static PHLWINDOW getOverviewWindowToShow(const PHLWINDOW& window) {
     if (!window)
         return nullptr;
 
-    if (window->m_group)
-        return window->m_group->current();
+    if (window->grouping().group())
+        return window->grouping().group()->current();
 
     return window;
 }
@@ -106,7 +111,7 @@ static bool shouldShowOverviewWindow(const PHLWINDOW& window) {
     if (!validMapped(WINDOW))
         return false;
 
-    if (WINDOW->m_pinned && WINDOW->m_isFloating)
+    if ((WINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED) && WINDOW->isFloating())
         return false;
 
     return true;
@@ -132,96 +137,57 @@ struct SOverviewPseudoFocusState {
     SP<Desktop::CFocusState>       focusState;
     PHLWINDOWREF                  previousFocusWindow;
     WP<CWLSurfaceResource>         previousFocusSurface;
-    Config::CGradientValueData     previousBorderColor;
-    Config::CGradientValueData     previousBorderColorPrevious;
-    Config::CGradientValueData     previousShadowColor;
-    Config::CGradientValueData     previousShadowColorPrevious;
-    Config::CGradientValueData     previousGlowColor;
-    Config::CGradientValueData     previousGlowColorPrevious;
     float                          previousOpacity = 1.F;
     float                          previousDim     = 0.F;
     bool                           active          = false;
+
+    static void refreshDecorationState(const PHLWINDOW& window) {
+        if (!window)
+            return;
+
+        for (const auto& deco : window->presentation().decorations()) {
+            if (deco)
+                deco->updateState();
+        }
+    }
 
     SOverviewPseudoFocusState(const PHLWINDOW& window_, const PHLWINDOW& pseudoFocusWindow) : window(window_) {
         if (!window || !pseudoFocusWindow)
             return;
 
-        active                      = true;
-        focusState                  = Desktop::focusState();
-        previousFocusWindow         = focusState->m_focusWindow;
-        previousFocusSurface        = focusState->m_focusSurface;
-        previousBorderColor         = window->m_realBorderColor;
-        previousBorderColorPrevious = window->m_realBorderColorPrevious;
-        previousShadowColor         = window->m_realShadowColor;
-        previousShadowColorPrevious = window->m_realShadowColorPrevious;
-        previousGlowColor           = window->m_realGlowColor;
-        previousGlowColorPrevious   = window->m_realGlowColorPrevious;
-        previousOpacity             = window->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value();
-        previousDim                 = window->m_dimPercent->value();
+        active               = true;
+        focusState           = Desktop::focusState();
+        previousFocusWindow  = focusState->m_focusWindow;
+        previousFocusSurface = focusState->m_focusSurface;
+        previousOpacity      = window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value();
+        previousDim          = window->presentation().dimPercent();
 
         focusState->m_focusWindow = pseudoFocusWindow;
         if (pseudoFocusWindow->wlSurface() && pseudoFocusWindow->wlSurface()->resource())
             focusState->m_focusSurface = pseudoFocusWindow->wlSurface()->resource();
 
-        const bool ISACTIVE    = window == pseudoFocusWindow;
-        const bool GROUPLOCKED = (window->m_group && window->m_group->locked()) || Desktop::windowState()->groupsLocked();
-        const bool NOGROUP     = window->m_groupRules & Desktop::View::GROUP_DENY;
-        const auto BORDERKEY   = window->m_group ?
-            (ISACTIVE ? (GROUPLOCKED ? "group:col.border_locked_active" : "group:col.border_active") :
-                        (GROUPLOCKED ? "group:col.border_locked_inactive" : "group:col.border_inactive")) :
-            (ISACTIVE ? (NOGROUP ? "general:col.nogroup_border_active" : "general:col.active_border") :
-                        (NOGROUP ? "general:col.nogroup_border" : "general:col.inactive_border"));
-        const auto BORDERCOLOR = ScrollOverview::Config::getValue<Config::CGradientValueData>(BORDERKEY);
+        const bool ISACTIVE = window == pseudoFocusWindow;
+        window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = getOverviewWindowTargetOpacity(window);
 
-        window->m_realBorderColor =
-            ISACTIVE ? window->m_ruleApplicator->activeBorderColor().valueOr(BORDERCOLOR) : window->m_ruleApplicator->inactiveBorderColor().valueOr(BORDERCOLOR);
-        window->m_realBorderColorPrevious = window->m_realBorderColor;
-
-        const auto SHADOWACTIVE   = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color");
-        const auto SHADOWINACTIVE = Config::mgr()->getConfigValue("decoration:shadow:color_inactive").setByUser ?
-            ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color_inactive") :
-            SHADOWACTIVE;
-        const auto GLOWACTIVE     = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:glow:color");
-        const auto GLOWINACTIVE   = Config::mgr()->getConfigValue("decoration:glow:color_inactive").setByUser ?
-            ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:glow:color_inactive") :
-            GLOWACTIVE;
-
-        if (window->isX11OverrideRedirect() || window->m_X11DoesntWantBorders) {
-            const Config::CGradientValueData TRANSPARENT{CHyprColor{0, 0, 0, 0}};
-            window->m_realShadowColor = TRANSPARENT;
-            window->m_realGlowColor   = TRANSPARENT;
-        } else {
-            window->m_realShadowColor = ISACTIVE ? SHADOWACTIVE : SHADOWINACTIVE;
-            window->m_realGlowColor   = ISACTIVE ? GLOWACTIVE : GLOWINACTIVE;
-        }
-        window->m_realShadowColorPrevious = window->m_realShadowColor;
-        window->m_realGlowColorPrevious   = window->m_realGlowColor;
-
-        window->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = getOverviewWindowTargetOpacity(window);
-
-        const bool ISMODALSHADOWED = window->m_xdgSurface && window->m_xdgSurface->m_toplevel && window->m_xdgSurface->m_toplevel->anyChildModal();
+        const bool ISMODALSHADOWED = window->backend().traits().hasModalChild;
         float      dim             = ISACTIVE || window->m_ruleApplicator->noDim().valueOrDefault() || !ScrollOverview::Config::getValue<bool>("decoration:dim_inactive") ?
                  0.F :
                  ScrollOverview::Config::getValue<float>("decoration:dim_strength");
         if (ISMODALSHADOWED && ScrollOverview::Config::getValue<bool>("decoration:dim_modal"))
             dim += (1.F - dim) / 2.F;
-        window->m_dimPercent->value() = dim;
+        window->presentation().m_dimPercent->value() = dim;
+        refreshDecorationState(window);
     }
 
     ~SOverviewPseudoFocusState() {
         if (!active)
             return;
 
-        window->m_realBorderColor         = previousBorderColor;
-        window->m_realBorderColorPrevious = previousBorderColorPrevious;
-        window->m_realShadowColor         = previousShadowColor;
-        window->m_realShadowColorPrevious = previousShadowColorPrevious;
-        window->m_realGlowColor           = previousGlowColor;
-        window->m_realGlowColorPrevious   = previousGlowColorPrevious;
-        window->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = previousOpacity;
-        window->m_dimPercent->value()                 = previousDim;
-        focusState->m_focusWindow                     = previousFocusWindow;
-        focusState->m_focusSurface                    = previousFocusSurface;
+        window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = previousOpacity;
+        window->presentation().m_dimPercent->value()                             = previousDim;
+        focusState->m_focusWindow                                                = previousFocusWindow;
+        focusState->m_focusSurface                                               = previousFocusSurface;
+        refreshDecorationState(window);
     }
 };
 
@@ -233,8 +199,8 @@ static void roundStandaloneWindowPassElements(const PHLWINDOW& window, PHLMONITO
     if (Fullscreen::controller()->isFullscreen(window))
         return;
 
-    const int   rounding      = sc<int>(std::round(window->rounding() * monitor->m_scale * renderScale));
-    const float roundingPower = window->roundingPower();
+    const int   rounding      = sc<int>(std::round(window->presentation().rounding() * monitor->m_scale * renderScale));
+    const float roundingPower = window->presentation().roundingPower();
 
     if (rounding <= 0)
         return;
@@ -291,7 +257,7 @@ static float getOverviewHyprbarLogicalHeight(const PHLWINDOW& window) {
     if (!window || !window->m_ruleApplicator->decorate().valueOrDefault())
         return 0.F;
 
-    for (const auto& deco : window->m_windowDecorations) {
+    for (const auto& deco : window->presentation().decorations()) {
         if (!isOverviewHyprbarDecoration(deco.get()))
             continue;
 
@@ -347,7 +313,7 @@ static void scaleOverviewChildSurfaceGeometry(const PHLWINDOW& window, const Vec
     if (!window)
         return;
 
-    const auto REPORTEDSIZE = window->getReportedSize();
+    const auto REPORTEDSIZE = window->backend().reportedSize();
     if (REPORTEDSIZE.x <= 0 || REPORTEDSIZE.y <= 0)
         return;
 
@@ -420,11 +386,11 @@ static SOverviewWindowMetrics getOverviewWindowMetrics(PHLMONITOR monitor, const
         return metrics;
 
     metrics.pxScale                 = monitor->m_scale * renderScale;
-    metrics.borderSize              = window->getRealBorderSize();
+    metrics.borderSize              = window->presentation().borderSize();
     metrics.borderPx                = sc<int>(std::round(metrics.borderSize * monitor->m_scale));
     metrics.borderPxScaled          = metrics.borderSize * metrics.pxScale;
-    metrics.roundingBase            = window->rounding();
-    metrics.roundingPower           = window->roundingPower();
+    metrics.roundingBase            = window->presentation().rounding();
+    metrics.roundingPower           = window->presentation().roundingPower();
     metrics.correctionOffset        = metrics.borderSize * (M_SQRT2 - 1) * std::max(2.0 - metrics.roundingPower, 0.0);
     metrics.outerRound              = metrics.roundingBase > 0 ? (metrics.roundingBase + metrics.borderSize) - metrics.correctionOffset : 0.F;
     metrics.roundingPx              = sc<int>(std::round(metrics.roundingBase * metrics.pxScale));
@@ -448,7 +414,7 @@ static std::optional<SDecorationPositioningReply> getOverviewTopStickyDecoration
         return std::nullopt;
 
     const float HEIGHT  = std::max(0.F, sc<float>(INFO.desiredExtents.topLeft.y) * heightScale);
-    const float BORDER  = sc<float>(window->getRealBorderSize());
+    const float BORDER  = sc<float>(window->presentation().borderSize());
     const bool  PRECEDE = shouldOverviewBorderIncludeHyprbar(window);
     const float WIDTH   = PRECEDE ? window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT).x : window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT).x + BORDER * 2.F;
     const float YOFFSET = PRECEDE ? 0.F : BORDER;
@@ -501,22 +467,24 @@ static void renderOverviewHyprbarDecoration(SOverviewCustomDecorationRenderState
     const Vector2D previousWindowPos       = window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
     const Vector2D previousWindowSize      = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
     const auto     WORKSPACE               = window->m_workspace;
-    const bool     OVERRIDEWORKSPACEOFFSET = WORKSPACE && !window->m_pinned;
+    const bool     OVERRIDEWORKSPACEOFFSET = WORKSPACE && !(window->m_state & Desktop::View::WINDOW_STATE_PINNED);
     const Vector2D previousWorkspaceOffset = OVERRIDEWORKSPACEOFFSET ? WORKSPACE->m_renderOffset->value() : Vector2D{};
     const auto     previousReplyData       = g_pDecorationPositioner->getDataFor(decoration, window);
     const auto     previousReply           = previousReplyData ? previousReplyData->lastReply : SDecorationPositioningReply{};
     const auto     previousRounding        = window->m_ruleApplicator->rounding();
     const auto     previousBorderSize      = window->m_ruleApplicator->borderSize();
-    const bool     previousBorderCacheDirty = window->m_borderSizeCacheDirty;
-    const int      previousCachedBorderSize = window->m_cachedBorderSize;
+    auto* const    BORDERDECO               = dc<CHyprBorderDecoration*>(window->presentation().decoration(DECORATION_BORDER).get());
+    const bool     previousBorderCacheDirty = BORDERDECO && BORDERDECO->m_borderSizeCacheDirty;
+    const int      previousCachedBorderSize = BORDERDECO ? BORDERDECO->m_cachedBorderSize : -1;
 
     const auto scaledRounding   = std::max<Config::INTEGER>(0, sc<Config::INTEGER>(std::round(window->m_ruleApplicator->rounding().valueOrDefault() * metrics.renderScale)));
-    const auto scaledBorderSize = std::max<Config::INTEGER>(0, sc<Config::INTEGER>(std::round(window->getRealBorderSize() * metrics.renderScale)));
+    const auto scaledBorderSize = std::max<Config::INTEGER>(0, sc<Config::INTEGER>(std::round(window->presentation().borderSize() * metrics.renderScale)));
     window->m_ruleApplicator->rounding().set(scaledRounding, Desktop::Types::PRIORITY_SET_PROP);
     window->m_ruleApplicator->borderSize().set(scaledBorderSize, Desktop::Types::PRIORITY_SET_PROP);
-    window->m_borderSizeCacheDirty = true;
+    if (BORDERDECO)
+        BORDERDECO->m_borderSizeCacheDirty = true;
 
-    window->positionAnimation()->value() = monitor->m_position + windowBox.pos() / monitor->m_scale - window->m_floatingOffset;
+    window->positionAnimation()->value() = monitor->m_position + windowBox.pos() / monitor->m_scale - window->presentation().floatingOffset();
     window->sizeAnimation()->value()     = windowBox.size() / monitor->m_scale;
 
     const auto REPLY = getOverviewTopStickyDecorationReply(decoration, window, metrics.renderScale);
@@ -527,8 +495,10 @@ static void renderOverviewHyprbarDecoration(SOverviewCustomDecorationRenderState
         ScrollOverview::Config::setValue("plugin:hyprbars:bar_button_padding", previousButtonPadding);
         window->m_ruleApplicator->roundingOverride(previousRounding);
         window->m_ruleApplicator->borderSizeOverride(previousBorderSize);
-        window->m_borderSizeCacheDirty = previousBorderCacheDirty;
-        window->m_cachedBorderSize     = previousCachedBorderSize;
+        if (auto* const BORDER = dc<CHyprBorderDecoration*>(window->presentation().decoration(DECORATION_BORDER).get())) {
+            BORDER->m_borderSizeCacheDirty = previousBorderCacheDirty;
+            BORDER->m_cachedBorderSize     = previousCachedBorderSize;
+        }
         if (HYPRBARGLOBALSTATE) {
             for (size_t i = 0; i < previousButtonSizes.size() && i < HYPRBARGLOBALSTATE->buttons.size(); ++i)
                 HYPRBARGLOBALSTATE->buttons[i].size = previousButtonSizes[i];
@@ -565,8 +535,10 @@ static void renderOverviewHyprbarDecoration(SOverviewCustomDecorationRenderState
         ScrollOverview::Config::setValue("plugin:hyprbars:bar_button_padding", previousButtonPadding);
         window->m_ruleApplicator->roundingOverride(previousRounding);
         window->m_ruleApplicator->borderSizeOverride(previousBorderSize);
-        window->m_borderSizeCacheDirty = previousBorderCacheDirty;
-        window->m_cachedBorderSize     = previousCachedBorderSize;
+        if (auto* const BORDER = dc<CHyprBorderDecoration*>(window->presentation().decoration(DECORATION_BORDER).get())) {
+            BORDER->m_borderSizeCacheDirty = previousBorderCacheDirty;
+            BORDER->m_cachedBorderSize     = previousCachedBorderSize;
+        }
         if (auto* const HYPRBARGLOBALSTATE = getOverviewHyprbarGlobalState()) {
             for (size_t i = 0; i < previousButtonSizes.size() && i < HYPRBARGLOBALSTATE->buttons.size(); ++i)
                 HYPRBARGLOBALSTATE->buttons[i].size = previousButtonSizes[i];
@@ -575,7 +547,7 @@ static void renderOverviewHyprbarDecoration(SOverviewCustomDecorationRenderState
 }
 
 static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const SOverviewWindowMetrics& metrics, bool selected) {
-    if (!monitor || !window || (!window->m_isMapped))
+    if (!monitor || !window || (!window->mapped()))
         return;
 
     const auto PSHADOWS      = ScrollOverview::Config::getValue<int>("decoration:shadow:enabled");
@@ -586,7 +558,7 @@ static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& wind
     if (PSHADOWS != 1 || PSHADOWSIZE <= 0)
         return;
 
-    if (window->isX11OverrideRedirect() || window->m_X11DoesntWantBorders || !window->m_ruleApplicator->decorate().valueOrDefault() ||
+    if (window->backend().traits().overrideRedirect || window->backend().traits().suggestsNoBorder || !window->m_ruleApplicator->decorate().valueOrDefault() ||
         window->m_ruleApplicator->noShadow().valueOrDefault())
         return;
 
@@ -605,7 +577,11 @@ static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& wind
     if (shadowBox.width < 1 || shadowBox.height < 1)
         return;
 
-    const auto& shadowColor = window->m_realShadowColor;
+    auto* const SHADOWDECO = dc<CHyprDropShadowDecoration*>(window->presentation().decoration(DECORATION_SHADOW).get());
+    if (!SHADOWDECO)
+        return;
+    const auto  shadowState = SHADOWDECO->m_gradient.renderState();
+    const auto& shadowColor = shadowState.current;
     if (std::ranges::none_of(shadowColor.m_colors, [](const CHyprColor& color) { return color.a > 0.F; }))
         return;
 
@@ -624,13 +600,18 @@ static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& wind
 }
 
 static void renderOverviewWindowBorder(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const SOverviewWindowMetrics& metrics, bool selected) {
-    if (!monitor || !window || (!window->m_isMapped))
+    if (!monitor || !window || (!window->mapped()))
         return;
 
     if (metrics.borderSize <= 0.F)
         return;
 
-    auto grad = window->m_realBorderColor;
+    auto* const BORDERDECO = dc<CHyprBorderDecoration*>(window->presentation().decoration(DECORATION_BORDER).get());
+    if (!BORDERDECO)
+        return;
+
+    const auto GRADIENT = BORDERDECO->m_gradient.renderState();
+    auto       grad     = GRADIENT.current;
 
     const CBox borderBox = getOverviewBorderBox(windowBox, metrics);
 
@@ -642,18 +623,18 @@ static void renderOverviewWindowBorder(PHLMONITOR monitor, const PHLWINDOW& wind
     data.roundingPower = metrics.roundingPower;
     data.a             = metrics.targetOpacity;
     data.borderSize    = metrics.borderSize;
-    if (window->m_borderFadeAnimationProgress->isBeingAnimated()) {
+    if (GRADIENT.transitioning) {
         data.hasGrad2 = true;
-        data.grad1    = window->m_realBorderColorPrevious;
+        data.grad1    = GRADIENT.previous;
         data.grad2    = grad;
-        data.lerp     = window->m_borderFadeAnimationProgress->value();
+        data.lerp     = GRADIENT.progress;
     } else
         data.grad1 = grad;
     g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
 }
 
 static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const SOverviewWindowMetrics& metrics, float alpha) {
-    if (!monitor || !window || !window->m_group || window->m_group->size() < 1)
+    if (!monitor || !window || !window->grouping().group() || window->grouping().group()->size() < 1)
         return;
 
     const auto PINDICATORHEIGHT = ScrollOverview::Config::getValue<int>("group:groupbar:indicator_height");
@@ -670,8 +651,8 @@ static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW
     if (PINDICATORHEIGHT <= 0)
         return;
 
-    const bool  groupLocked  = window->m_group->locked() || Desktop::windowState()->groupsLocked();
-    const auto  groupWindows = window->m_group->windows();
+    const bool  groupLocked  = window->grouping().group()->locked() || Desktop::windowState()->groupsLocked();
+    const auto  groupWindows = window->grouping().group()->windows();
     const auto  focusedWindow = Desktop::focusState()->window();
     const float indicatorH   = sc<float>(PINDICATORHEIGHT) * metrics.pxScale;
     const float outerGap     = sc<float>(POUTERGAP) * metrics.pxScale;
@@ -726,7 +707,7 @@ static void renderOverviewGroupTabIndicators(PHLMONITOR monitor, const PHLWINDOW
 }
 
 static void renderOverviewGroupTabTitles(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const SOverviewWindowMetrics& metrics, float alpha) {
-    if (!monitor || !window || !window->m_group || window->m_group->size() < 1 || alpha <= 0.F)
+    if (!monitor || !window || !window->grouping().group() || window->grouping().group()->size() < 1 || alpha <= 0.F)
         return;
 
     const auto PRENDERTITLES            = ScrollOverview::Config::getValue<bool>("group:groupbar:render_titles");
@@ -747,8 +728,8 @@ static void renderOverviewGroupTabTitles(PHLMONITOR monitor, const PHLWINDOW& wi
     if (!PRENDERTITLES || PHEIGHT <= 0)
         return;
 
-    const bool  groupLocked  = window->m_group->locked() || Desktop::windowState()->groupsLocked();
-    const auto  groupWindows = window->m_group->windows();
+    const bool  groupLocked  = window->grouping().group()->locked() || Desktop::windowState()->groupsLocked();
+    const auto  groupWindows = window->grouping().group()->windows();
     const auto  focusedWindow = Desktop::focusState()->window();
     const float outerGap     = sc<float>(POUTERGAP) * metrics.pxScale;
     const float innerGap     = sc<float>(PINNERGAP) * metrics.pxScale;
@@ -809,7 +790,7 @@ static void renderOverviewGroupTabTitles(PHLMONITOR monitor, const PHLWINDOW& wi
 
         const int maxWidth = std::max(1, sc<int>(std::round(box.width - textPadding * 2.F)));
         auto      titleTex =
-            g_pHyprRenderer->renderText(member->m_title, textColor, fontSizePx, false, FONTFAMILY, maxWidth, isCurrent ? FONTWEIGHTACTIVE->m_value : FONTWEIGHTINACTIVE->m_value);
+            g_pHyprRenderer->renderText(member->metadata().title(), textColor, fontSizePx, false, FONTFAMILY, maxWidth, isCurrent ? FONTWEIGHTACTIVE->m_value : FONTWEIGHTINACTIVE->m_value);
         if (!titleTex || !titleTex->ok())
             continue;
 
@@ -830,10 +811,10 @@ static void renderOverviewGroupTabTitles(PHLMONITOR monitor, const PHLWINDOW& wi
 
 static void renderOverviewGroupTabs(PHLMONITOR monitor, const PHLWINDOW& window, const CBox& windowBox, const CBox& workspaceBox,
                                     const SOverviewWindowMetrics& metrics) {
-    if (!monitor || !window || !window->m_group || window->m_group->size() < 1)
+    if (!monitor || !window || !window->grouping().group() || window->grouping().group()->size() < 1)
         return;
 
-    auto* const GROUPBAR = dc<CHyprGroupBarDecoration*>(window->getDecorationByType(DECORATION_GROUPBAR));
+    auto* const GROUPBAR = dc<CHyprGroupBarDecoration*>(window->presentation().decoration(DECORATION_GROUPBAR).get());
     if (!GROUPBAR)
         return;
 
@@ -846,14 +827,14 @@ static void renderOverviewGroupTabs(PHLMONITOR monitor, const PHLWINDOW& window,
     const auto  POUTERGAP        = ScrollOverview::Config::getValue<int>("group:groupbar:gaps_out");
     const auto  PKEEPUPPERGAP    = ScrollOverview::Config::getValue<int>("group:groupbar:keep_upper_gap");
 
-    const auto  ONEBARHEIGHT     = POUTERGAP + PINDICATORHEIGHT + PINDICATORGAP + (PGRADIENTS || PRENDERTITLES ? PHEIGHT : 0);
-    const auto  DESIREDHEIGHT    = PSTACKED ? (ONEBARHEIGHT * window->m_group->size()) + POUTERGAP * PKEEPUPPERGAP : POUTERGAP * (1 + PKEEPUPPERGAP) + ONEBARHEIGHT;
-    const auto  EDGEPOINT        = g_pDecorationPositioner->getEdgeDefinedPoint(DECORATION_EDGE_TOP, window);
-    CBox        assignedBox      = {window->m_realPosition->value() - Vector2D{0.0, sc<double>(DESIREDHEIGHT) + metrics.hyprbarTopOffsetLogical},
-                                    Vector2D{window->m_realSize->value().x, sc<double>(DESIREDHEIGHT)}};
+    const auto   ONEBARHEIGHT  = POUTERGAP + PINDICATORHEIGHT + PINDICATORGAP + (PGRADIENTS || PRENDERTITLES ? PHEIGHT : 0);
+    const double DESIREDHEIGHT = sc<double>(PSTACKED ? (ONEBARHEIGHT * window->grouping().group()->size()) + POUTERGAP * PKEEPUPPERGAP : POUTERGAP * (1 + PKEEPUPPERGAP) + ONEBARHEIGHT);
+    const auto   EDGEPOINT     = g_pDecorationPositioner->getEdgeDefinedPoint(DECORATION_EDGE_TOP, window);
+    CBox         assignedBox   = {window->positionAnimation()->value() - Vector2D(0.0, DESIREDHEIGHT + metrics.hyprbarTopOffsetLogical),
+                          Vector2D(window->sizeAnimation()->value().x, DESIREDHEIGHT)};
     assignedBox.translate(-EDGEPOINT);
 
-    if (window->m_workspace && !window->m_pinned)
+    if (window->m_workspace && !(window->m_state & Desktop::View::WINDOW_STATE_PINNED))
         assignedBox.translate(-window->m_workspace->m_renderOffset->value());
 
     const auto PREVASSIGNEDBOX = GROUPBAR->m_assignedBox;
@@ -878,14 +859,14 @@ static SOverviewCustomDecorationRenderState renderOverviewCustomDecorations(PHLM
     if (!monitor || !window)
         return state;
 
-    window->updateWindowDecos();
+    window->presentation().updateDecorations();
 
     Render::SRenderModifData modif;
     modif.modifs.emplace_back(Render::SRenderModifData::RMOD_TYPE_SCALE, metrics.renderScale);
     modif.modifs.emplace_back(Render::SRenderModifData::RMOD_TYPE_TRANSLATE, workspaceBox.pos());
     bool        drewAny = false;
 
-    for (const auto& deco : window->m_windowDecorations) {
+    for (const auto& deco : window->presentation().decorations()) {
         if (!deco || deco->getDecorationType() != DECORATION_CUSTOM || deco->getDecorationLayer() != layer)
             continue;
 
@@ -938,7 +919,7 @@ static bool overviewWorkspaceBoxReadyForPrecomputedBlur(PHLMONITOR monitor, cons
 }
 
 bool shouldUsePrecomputedBlur(const PHLWINDOW& window, PHLMONITOR monitor, const CBox* workspaceBox, const CBox* windowBox, bool dragged) {
-    return !dragged && ScrollOverview::Config::getValue<bool>("decoration:blur:new_optimizations") && shouldShowOverviewWindow(window) && !window->m_isFloating && shouldBlurBackground(window) &&
+    return !dragged && ScrollOverview::Config::getValue<bool>("decoration:blur:new_optimizations") && shouldShowOverviewWindow(window) && !window->isFloating() && shouldBlurBackground(window) &&
         overviewWindowFitsWorkspaceBox(workspaceBox, windowBox) && overviewWorkspaceBoxReadyForPrecomputedBlur(monitor, workspaceBox);
 }
 
@@ -954,7 +935,7 @@ void forceDecoRecalc(const PHLWINDOW& window) {
         return;
 
     g_pDecorationPositioner->forceRecalcFor(WINDOW);
-    WINDOW->updateWindowDecos();
+    WINDOW->presentation().updateDecorations();
 }
 
 void renderOverviewWindow(const SRenderParams& params) {
@@ -976,17 +957,17 @@ void renderOverviewWindow(const SRenderParams& params) {
             (*it)();
     }
 
-    const Vector2D previousWindowPos       = params.window->m_realPosition->value();
-    const Vector2D previousWindowSize      = params.window->m_realSize->value();
-    const bool     previousAnimatingIn     = params.window->m_animatingIn;
+    const Vector2D previousWindowPos       = params.window->positionAnimation()->value();
+    const Vector2D previousWindowSize      = params.window->sizeAnimation()->value();
+    const bool     previousAnimatingIn     = params.window->presentation().animatingIn();
     const bool     previousSizeAnimating   = params.window->sizeAnimation()->isBeingAnimated();
     const auto     WORKSPACE               = params.window->m_workspace;
-    const bool     OVERRIDEWORKSPACEOFFSET = WORKSPACE && !params.window->m_pinned;
+    const bool     OVERRIDEWORKSPACEOFFSET = WORKSPACE && !(params.window->m_state & Desktop::View::WINDOW_STATE_PINNED);
     const Vector2D previousWorkspaceOffset = OVERRIDEWORKSPACEOFFSET ? WORKSPACE->m_renderOffset->value() : Vector2D{};
 
-    params.window->positionAnimation()->value() = params.monitor->m_position + params.windowBox.pos() / params.monitor->m_scale - params.window->m_floatingOffset;
+    params.window->positionAnimation()->value() = params.monitor->m_position + params.windowBox.pos() / params.monitor->m_scale - params.window->presentation().floatingOffset();
     params.window->sizeAnimation()->value()     = params.windowBox.size() / params.monitor->m_scale;
-    params.window->m_animatingIn                 = true;
+    params.window->presentation().setAnimatingIn(true);
     COverviewAnimatedVariableAccess::setBeingAnimated(params.window->sizeAnimation().get(), true);
     if (OVERRIDEWORKSPACEOFFSET)
         WORKSPACE->m_renderOffset->value() = {};
@@ -994,7 +975,7 @@ void renderOverviewWindow(const SRenderParams& params) {
     auto restoreWindowGeometry = Hyprutils::Utils::CScopeGuard([&] {
         params.window->positionAnimation()->value() = previousWindowPos;
         params.window->sizeAnimation()->value()     = previousWindowSize;
-        params.window->m_animatingIn                 = previousAnimatingIn;
+        params.window->presentation().setAnimatingIn(previousAnimatingIn);
         COverviewAnimatedVariableAccess::setBeingAnimated(params.window->sizeAnimation().get(), previousSizeAnimating);
         if (OVERRIDEWORKSPACEOFFSET && WORKSPACE)
             WORKSPACE->m_renderOffset->value() = previousWorkspaceOffset;

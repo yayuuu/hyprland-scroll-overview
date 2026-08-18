@@ -5,7 +5,8 @@
 #include <sstream>
 
 #define private public
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -103,7 +104,7 @@ static CBox clipScrollingIndicatorBox(CBox box, const CDropIndicator::SRenderPar
 }
 
 static int indicatorRounding(const CDropIndicator::SRenderParams& params) {
-    const float ROUNDING = params.anchor.window ? params.anchor.window->rounding() : ScrollOverview::Config::getValue<int>("decoration:rounding");
+    const float ROUNDING = params.anchor.window ? params.anchor.window->presentation().rounding() : ScrollOverview::Config::getValue<int>("decoration:rounding");
     const float SCALE    = std::max(params.renderScale, 0.01F) * std::max<float>(params.monitor ? params.monitor->m_scale : 1.F, 0.01F);
 
     return std::max(0, sc<int>(std::round(ROUNDING * SCALE)));
@@ -111,7 +112,7 @@ static int indicatorRounding(const CDropIndicator::SRenderParams& params) {
 
 static float indicatorRoundingPower(const CDropIndicator::SRenderParams& params) {
     if (params.anchor.window)
-        return params.anchor.window->roundingPower();
+        return params.anchor.window->presentation().roundingPower();
 
     return ScrollOverview::Config::getValue<float>("decoration:rounding_power");
 }
