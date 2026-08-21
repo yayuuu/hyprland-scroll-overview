@@ -26,7 +26,7 @@
 #include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/types.hpp>
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
-#include <hyprland/src/render/decorations/CHyprBorderDecoration.hpp>
+#include <hyprland/src/render/decorations/CHyprInnerGlowDecoration.hpp>
 #include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
 #include <hyprland/src/render/decorations/DecorationPositioner.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
@@ -137,18 +137,22 @@ struct SOverviewPseudoFocusState {
     SP<Desktop::CFocusState>       focusState;
     PHLWINDOWREF                  previousFocusWindow;
     WP<CWLSurfaceResource>         previousFocusSurface;
+    CHyprBorderDecoration*         borderDecoration = nullptr;
+    CHyprDropShadowDecoration*     shadowDecoration = nullptr;
+    CHyprInnerGlowDecoration*      glowDecoration = nullptr;
+    Config::CGradientValueData     previousBorderColor;
+    Config::CGradientValueData     previousBorderColorPrevious;
+    Config::CGradientValueData     previousShadowColor;
+    Config::CGradientValueData     previousShadowColorPrevious;
+    Config::CGradientValueData     previousGlowColor;
+    Config::CGradientValueData     previousGlowColorPrevious;
     float                          previousOpacity = 1.F;
     float                          previousDim     = 0.F;
     bool                           active          = false;
 
-    static void refreshDecorationState(const PHLWINDOW& window) {
-        if (!window)
-            return;
-
-        for (const auto& deco : window->presentation().decorations()) {
-            if (deco)
-                deco->updateState();
-        }
+    static void setGradientState(CAnimatedDecorationGradient& gradient, const Config::CGradientValueData& value) {
+        gradient.m_current  = value;
+        gradient.m_previous = value;
     }
 
     SOverviewPseudoFocusState(const PHLWINDOW& window_, const PHLWINDOW& pseudoFocusWindow) : window(window_) {
@@ -162,11 +166,54 @@ struct SOverviewPseudoFocusState {
         previousOpacity      = window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value();
         previousDim          = window->presentation().dimPercent();
 
+        borderDecoration = dc<CHyprBorderDecoration*>(window->presentation().decoration(DECORATION_BORDER).get());
+        shadowDecoration = dc<CHyprDropShadowDecoration*>(window->presentation().decoration(DECORATION_SHADOW).get());
+        glowDecoration   = dc<CHyprInnerGlowDecoration*>(window->presentation().decoration(DECORATION_INNER_GLOW).get());
+
+        if (borderDecoration) {
+            previousBorderColor         = borderDecoration->m_gradient.m_current;
+            previousBorderColorPrevious = borderDecoration->m_gradient.m_previous;
+        }
+        if (shadowDecoration) {
+            previousShadowColor         = shadowDecoration->m_gradient.m_current;
+            previousShadowColorPrevious = shadowDecoration->m_gradient.m_previous;
+        }
+        if (glowDecoration) {
+            previousGlowColor         = glowDecoration->m_gradient.m_current;
+            previousGlowColorPrevious = glowDecoration->m_gradient.m_previous;
+        }
+
         focusState->m_focusWindow = pseudoFocusWindow;
         if (pseudoFocusWindow->wlSurface() && pseudoFocusWindow->wlSurface()->resource())
             focusState->m_focusSurface = pseudoFocusWindow->wlSurface()->resource();
 
-        const bool ISACTIVE = window == pseudoFocusWindow;
+        const bool ISACTIVE    = window == pseudoFocusWindow;
+        const bool GROUPLOCKED = (window->grouping().group() && window->grouping().group()->locked()) || Desktop::windowState()->groupsLocked();
+        const bool NOGROUP     = window->grouping().rules() & Desktop::View::GROUP_DENY;
+        const auto BORDERKEY   = window->grouping().group() ?
+            (ISACTIVE ? (GROUPLOCKED ? "group:col.border_locked_active" : "group:col.border_active") :
+                        (GROUPLOCKED ? "group:col.border_locked_inactive" : "group:col.border_inactive")) :
+            (ISACTIVE ? (NOGROUP ? "general:col.nogroup_border_active" : "general:col.active_border") :
+                        (NOGROUP ? "general:col.nogroup_border" : "general:col.inactive_border"));
+        const auto BORDERCOLOR = ScrollOverview::Config::getValue<Config::CGradientValueData>(BORDERKEY);
+        const auto BORDER       = ISACTIVE ? window->m_ruleApplicator->activeBorderColor().valueOr(BORDERCOLOR) :
+            window->m_ruleApplicator->inactiveBorderColor().valueOr(BORDERCOLOR);
+
+        const auto SHADOWACTIVE   = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color");
+        const auto SHADOWINACTIVE = Config::mgr()->getConfigValue("decoration:shadow:color_inactive").setByUser ?
+            ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color_inactive") : SHADOWACTIVE;
+        const auto GLOWACTIVE     = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:glow:color");
+        const auto GLOWINACTIVE   = Config::mgr()->getConfigValue("decoration:glow:color_inactive").setByUser ?
+            ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:glow:color_inactive") : GLOWACTIVE;
+        const Config::CGradientValueData TRANSPARENT{CHyprColor{0, 0, 0, 0}};
+
+        if (borderDecoration)
+            setGradientState(borderDecoration->m_gradient, BORDER);
+        if (shadowDecoration)
+            setGradientState(shadowDecoration->m_gradient, window->backend().traits().overrideRedirect || window->backend().traits().suggestsNoBorder ? TRANSPARENT : (ISACTIVE ? SHADOWACTIVE : SHADOWINACTIVE));
+        if (glowDecoration)
+            setGradientState(glowDecoration->m_gradient, window->backend().traits().overrideRedirect || window->backend().traits().suggestsNoBorder ? TRANSPARENT : (ISACTIVE ? GLOWACTIVE : GLOWINACTIVE));
+
         window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = getOverviewWindowTargetOpacity(window);
 
         const bool ISMODALSHADOWED = window->backend().traits().hasModalChild;
@@ -176,18 +223,28 @@ struct SOverviewPseudoFocusState {
         if (ISMODALSHADOWED && ScrollOverview::Config::getValue<bool>("decoration:dim_modal"))
             dim += (1.F - dim) / 2.F;
         window->presentation().m_dimPercent->value() = dim;
-        refreshDecorationState(window);
     }
 
     ~SOverviewPseudoFocusState() {
         if (!active)
             return;
 
+        if (borderDecoration) {
+            borderDecoration->m_gradient.m_current  = previousBorderColor;
+            borderDecoration->m_gradient.m_previous = previousBorderColorPrevious;
+        }
+        if (shadowDecoration) {
+            shadowDecoration->m_gradient.m_current  = previousShadowColor;
+            shadowDecoration->m_gradient.m_previous = previousShadowColorPrevious;
+        }
+        if (glowDecoration) {
+            glowDecoration->m_gradient.m_current  = previousGlowColor;
+            glowDecoration->m_gradient.m_previous = previousGlowColorPrevious;
+        }
         window->presentation().alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->value() = previousOpacity;
-        window->presentation().m_dimPercent->value()                             = previousDim;
-        focusState->m_focusWindow                                                = previousFocusWindow;
-        focusState->m_focusSurface                                               = previousFocusSurface;
-        refreshDecorationState(window);
+        window->presentation().m_dimPercent->value() = previousDim;
+        focusState->m_focusWindow  = previousFocusWindow;
+        focusState->m_focusSurface = previousFocusSurface;
     }
 };
 
