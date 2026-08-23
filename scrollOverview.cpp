@@ -1704,7 +1704,8 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
     SP<Render::ITexture> BLURREDTEX;
     {
         auto bindBackdrop = g_pHyprRenderer->bindTempFB(backdropBlurFB);
-        BLURREDTEX        = g_pHyprRenderer->blurMainFramebuffer(1.F, &blurDamage);
+        const auto blurredFB = g_pHyprRenderer->blurMainFramebuffer(1.F, blurDamage);
+        BLURREDTEX = blurredFB ? blurredFB->getTexture() : nullptr;
     }
     if (!BLURREDTEX || !BLURREDTEX->m_size.x || !BLURREDTEX->m_size.y)
         return;
