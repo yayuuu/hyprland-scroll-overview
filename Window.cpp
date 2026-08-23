@@ -951,7 +951,7 @@ static SOverviewCustomDecorationRenderState renderOverviewCustomDecorations(PHLM
 } // namespace
 
 bool shouldBlurBackground(const PHLWINDOW& window) {
-    return window && g_pHyprRenderer && g_pHyprRenderer->shouldBlur(window);
+    return window && window->shouldBlur();
 }
 
 static bool overviewBoxContains(const CBox& outer, const CBox& inner) {
