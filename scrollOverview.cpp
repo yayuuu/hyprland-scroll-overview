@@ -1168,11 +1168,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         const bool RELEASESPOINTERGRAB = event.state == WL_POINTER_BUTTON_STATE_RELEASED;
         auto       releasePointerGrab  = Hyprutils::Utils::CScopeGuard([this, RELEASESPOINTERGRAB] {
             if (RELEASESPOINTERGRAB && g_pointerGrabOverview == this) {
-                dragCancelledAwaitingRelease = false;
-                dragAdoptedFromNative        = false;
-                g_pointerGrabOverview        = nullptr;
-
-                if (closing && closeRemovalPending)
+                if (dragCancelledAwaitingRelease && closing && closeRemovalPending && !scale->isBeingAnimated())
                     wl_event_loop_add_idle(
                         g_pCompositor->m_wlEventLoop,
                         [](void* data) {
@@ -1181,6 +1177,10 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
                                 removeOverview(overview);
                         },
                         this);
+
+                dragCancelledAwaitingRelease = false;
+                dragAdoptedFromNative        = false;
+                g_pointerGrabOverview        = nullptr;
             }
         });
 
