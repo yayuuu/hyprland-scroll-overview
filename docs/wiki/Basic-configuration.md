@@ -18,6 +18,11 @@ hl.config({
                 enabled = true,
                 range = 50,
             },
+
+            title = {
+                enabled = true,
+                font_size = 12,
+            },
         },
     },
 })
@@ -41,6 +46,7 @@ end)
 | blur | bool | blur the main overview wallpaper without blurring workspace wallpapers | `false` |
 | input | structure | input configuration subcategory; accepts a structure containing the properties listed below | see below |
 | shadow | structure | shadow configuration subcategory; accepts a structure containing the properties listed below | see below |
+| title | structure | window title configuration subcategory; accepts a structure containing the properties listed below | see below |
 
 ### Subcategory `input`
 
@@ -65,6 +71,17 @@ Controls the shadow around each workspace card. `enabled` defaults to `false`; a
 | range | int | shadow range in layout px | `decoration.shadow.range` |
 | render_power | int | shadow falloff power | `decoration.shadow.render_power` |
 | color | color or gradient | shadow color or gradient | `decoration.shadow.color` |
+
+### Subcategory `title`
+
+Controls labels shown over overview windows. When a window has no title, its class is shown instead.
+
+| property | type | description | default |
+| --- | --- | --- | --- |
+| enabled | bool | show window titles in the overview | `true` |
+| font_size | int | title font size | `12` |
+| text_color | color | title text color | `0xffffffff` |
+| background_color | color | title background color | `0x99000000` |
 
 ## Gestures
 

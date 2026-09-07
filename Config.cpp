@@ -303,6 +303,14 @@ static void registerConfigValues() {
                                   makeShared<CIntValue>("plugin:scrolloverview:shadow:render_power", "workspace card shadow render power", -1));
     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
                                   makeShared<CGradientValue>("plugin:scrolloverview:shadow:color", "workspace card shadow color", -1));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CBoolValue>("plugin:scrolloverview:title:enabled", "show window titles in the overview", true));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CIntValue>("plugin:scrolloverview:title:font_size", "overview window title font size", 12, SIntValueOptions{.min = 1}));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CIntValue>("plugin:scrolloverview:title:text_color", "overview window title color", 0xFFFFFFFF));
+    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                  makeShared<CIntValue>("plugin:scrolloverview:title:background_color", "overview window title background color", 0x99000000));
 }
 
 void registerConfig() {

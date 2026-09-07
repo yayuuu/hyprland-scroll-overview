@@ -319,7 +319,16 @@ static CBox getOverviewWindowBox(const PHLWINDOW& window, PHLMONITOR monitor, fl
     if (!window)
         return {};
 
-    return getOverviewGlobalBox(window->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT), monitor, scale, viewOffset, offset, layout, round);
+    CBox box = window->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+    if (!window->m_isFloating) {
+        const auto GAPS = ScrollOverview::Config::getCssGapData("general:gaps_in");
+        box.x -= std::max<int64_t>(0, GAPS.m_left);
+        box.y -= std::max<int64_t>(0, GAPS.m_top);
+        box.width += std::max<int64_t>(0, GAPS.m_left) + std::max<int64_t>(0, GAPS.m_right);
+        box.height += std::max<int64_t>(0, GAPS.m_top) + std::max<int64_t>(0, GAPS.m_bottom);
+    }
+
+    return getOverviewGlobalBox(box, monitor, scale, viewOffset, offset, layout, round);
 }
 
 static CBox getOverviewDragWindowBox(const PHLWINDOW& window, PHLMONITOR monitor, float scale, const Vector2D& viewOffset, float offset, ScrollOverview::Config::ELayout layout,

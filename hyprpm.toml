@@ -8,6 +8,7 @@ commit_pins = [
     ["39d7e209c79d451efab1b21151d5938289da838d", "b89de003673f9d579b9a14d844ee6a2dcb84ec88"], # v0.55.2
     ["fe5fe79a29ac3adaf3e75560b2f4b7a6d58b31c9", "25335dee0e8b1430356c3218a86dc7ee50d6df71"], # v0.55.3
     ["a0136d8c04687bb36eb8a28eb9d1ff92aea99704", "cfc23b194ba9378d1606c7aa73060f6ffbe38445"], # v0.55.4
+    ["36b2e0cfe0c6094dbc47bd42a437431315bb3087", "c4f48bb12b93dcef30bb781d1ec6be3bdcf3df92"], # v0.56.0-db
 ]
 
 [scrolloverview]
