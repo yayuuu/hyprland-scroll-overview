@@ -39,7 +39,7 @@ plugin {
         gesture_distance = 300 # how far is the "max" for the gesture
         scale = 0.5 # preferred overview scale
         workspace_gap = 100
-        layout = vertical # vertical or horizontal
+        layout = vertical # vertical, horizontal, or auto (per-monitor orientation)
         wallpaper = 2 # 0: global only, 1: per-workspace only, 2: both
         blur = true # blur only the main overview wallpaper
 
@@ -64,7 +64,7 @@ hl.config({
             gesture_distance = 300, -- how far is the "max" for the gesture
             scale = 0.5, -- preferred overview scale
             workspace_gap = 100,
-            layout = "vertical", -- vertical or horizontal
+            layout = "vertical", -- vertical, horizontal, or auto (per-monitor orientation)
             wallpaper = 2, -- 0: global only, 1: per-workspace only, 2: both
             blur = true, -- blur only the main overview wallpaper
 
@@ -81,6 +81,10 @@ hl.bind("SUPER + g", function()
     hl.plugin.scrolloverview.overview("toggle all")
 end)
 ```
+
+Set `cross_monitor_drag = true` to drag windows between monitors through ScrollOverview and adopt Hyprland move drags when another overview is open. It defaults to `false`. Native adoption uses Hyprland internals; if unavailable, overview-origin cross-monitor dragging still works.
+
+This setting does not affect overview-origin drags with `toggle all` because every overview is already open. Existing multi-monitor commands remain available when it is disabled.
 
 ## Documentation
 

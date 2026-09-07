@@ -31,6 +31,7 @@ class IOverview {
     virtual void  onSwipeEnd()                = 0;
 
     virtual void  close()                  = 0;
+    virtual void  dismissTransient()                                = 0;
     virtual bool  isClosing() const        = 0;
     virtual void  reopen()                 = 0;
     virtual void  selectHoveredWorkspace() = 0;
@@ -53,6 +54,9 @@ void                              closeAll();
 void                              registerScrollOverview(const SP<IOverview>& overview);
 void                              unregisterScrollOverview(IOverview* overview);
 void                              clearScrollOverviews();
+void                              markCrossMonitorDragSession(IOverview* source, const SP<IOverview>& destination);
+bool                              closeCrossMonitorDragSession();
+void                              removeFromCrossMonitorDragSession(IOverview* overview);
 
 // Current interaction/render context. The authoritative state is the registry.
 inline SP<IOverview> g_pScrollOverview;

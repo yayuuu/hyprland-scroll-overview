@@ -21,6 +21,7 @@ using TGestureRegistrar   = SDispatchResult (*)(size_t fingerCount, const std::s
 enum class ELayout {
     VERTICAL,
     HORIZONTAL,
+    AUTO,
 };
 
 enum class EScrollAction {
@@ -87,6 +88,7 @@ int           getGestureDistance();
 float         getScale();
 int           getWorkspaceGap();
 ELayout       getLayout();
+bool          getCrossMonitorDrag();
 int           getScrollEventDelay();
 bool          getLeftHanded();
 int           getDragMode();

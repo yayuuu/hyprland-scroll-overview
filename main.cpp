@@ -15,6 +15,7 @@
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/managers/input/trackpad/GestureTypes.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 #include <hyprland/src/managers/input/trackpad/TrackpadGestures.hpp>
 
 #include <hyprutils/string/ConstVarList.hpp>
@@ -25,6 +26,7 @@ using namespace Hyprutils::String;
 #include "PluginVersion.hpp"
 #include "scrollOverview.hpp"
 #include "OverviewGesture.hpp"
+#include "OverviewOpen.hpp"
 
 // Methods
 static CFunctionHook* g_pScrollRenderWorkspaceHook = nullptr;
@@ -34,6 +36,7 @@ static CFunctionHook* g_pScrollDamageSurfaceHook   = nullptr;
 static CFunctionHook* g_pScrollScheduleFrameHook   = nullptr;
 static CFunctionHook* g_pScrollSendFrameEventsHook = nullptr;
 static CFunctionHook* g_pScrollSurfaceFrameHook    = nullptr;
+static CFunctionHook* g_pScrollMoveMouseHook       = nullptr;
 typedef void (*origRenderWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&, const CBox&);
 typedef void (*origAddDamageA)(void*, const CBox&);
 typedef void (*origAddDamageB)(void*, const pixman_region32_t*);
@@ -41,6 +44,7 @@ typedef void (*origDamageSurface)(void*, SP<CWLSurfaceResource>, double, double,
 typedef void (*origScheduleFrame)(void*, Aquamarine::IOutput::scheduleFrameReason);
 typedef void (*origSendFrameEventsToWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&);
 typedef void (*origSurfaceFrame)(void*, const Time::steady_tp&);
+typedef void (*origMoveMouse)(void*, const Vector2D&);
 
 static bool g_unloading = false;
 
@@ -52,9 +56,16 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 static bool renderingOverview = false;
 static bool damageFromSurface = false;
 static PHLMONITORREF renderingOverviewMonitor;
-static bool g_scrollOverviewHooksActive = false;
+static bool                g_scrollOverviewHooksActive      = false;
+static bool                g_scrollMoveMouseHookActive      = false;
+static bool                g_scrollMoveMouseHookUnavailable = false;
+static bool                g_scrollMoveMouseHookWarned      = false;
+static CHyprSignalListener g_configReloadHook;
 
 static void failNotif(const std::string& reason);
+static void warnNativeDragUnavailable();
+static void disableNativeDragHook();
+static void reconcileNativeDragHook();
 
 bool ensureScrollOverviewHooks() {
     if (g_scrollOverviewHooksActive)
@@ -75,10 +86,12 @@ bool ensureScrollOverviewHooks() {
     }
 
     g_scrollOverviewHooksActive = true;
+    reconcileNativeDragHook();
     return true;
 }
 
 void disableScrollOverviewHooks() {
+    disableNativeDragHook();
     if (g_pScrollAddDamageHookB)
         g_pScrollAddDamageHookB->unhook();
     if (g_pScrollAddDamageHookA)
@@ -95,6 +108,19 @@ void disableScrollOverviewHooks() {
         g_pScrollRenderWorkspaceHook->unhook();
 
     g_scrollOverviewHooksActive = false;
+}
+
+static void hkMoveMouse(void* thisptr, const Vector2D& mousePos) {
+    rc<origMoveMouse>(g_pScrollMoveMouseHook->m_original)(thisptr, mousePos);
+
+    // moveMouse() updates dragThresholdReached().
+    if (!g_unloading && g_scrollMoveMouseHookActive && ScrollOverview::Config::getCrossMonitorDrag()) {
+        try {
+            adoptNativeWindowDragIntoOverview();
+        } catch (...) {
+            // Never unwind through a Hyprland hook.
+        }
+    }
 }
 
 static void hkScheduleFrame(void* thisptr, Aquamarine::IOutput::scheduleFrameReason reason) {
@@ -233,19 +259,55 @@ static SP<IOverview> dispatcherOverview() {
     return activeScrollOverview();
 }
 
-static bool openOverview(PHLMONITOR monitor) {
-    if (!monitor || scrollOverviewForMonitor(monitor))
-        return true;
+bool adoptNativeWindowDragIntoOverview() {
+    if (!ScrollOverview::Config::getCrossMonitorDrag() || scrollOverviews().empty() || !g_layoutManager || !g_pInputManager)
+        return false;
+
+    const auto& DRAGCONTROLLER = g_layoutManager->dragController();
+    const auto  TARGET         = DRAGCONTROLLER ? DRAGCONTROLLER->target() : nullptr;
+    const auto  WINDOW         = TARGET ? TARGET->window() : PHLWINDOW{};
+    if (!WINDOW || DRAGCONTROLLER->mode() != MBIND_MOVE || !DRAGCONTROLLER->dragThresholdReached())
+        return false;
+
+    const auto SOURCEWORKSPACE = TARGET->workspace();
+    const auto SOURCEMONITOR   = SOURCEWORKSPACE ? SOURCEWORKSPACE->m_monitor.lock() : WINDOW->m_monitor.lock();
+    if (!SOURCEMONITOR || !SOURCEMONITOR->m_enabled)
+        return false;
+
+    auto        result   = openOverview(SOURCEMONITOR);
+    if (result.overview && result.overview->isClosing())
+        result.overview->reopen();
+
+    auto* const overview = result.overview ? dynamic_cast<CScrollOverview*>(result.overview.get()) : nullptr;
+    if (!overview || !overview->adoptNativeWindowDrag(WINDOW)) {
+        if (result.created && result.overview)
+            result.overview->dismissTransient();
+        return false;
+    }
+
+    result.overview->requestInputFrame();
+    result.overview->damage();
+    return true;
+}
+
+SOverviewOpenResult openOverview(PHLMONITOR monitor, bool swipe) {
+    if (!monitor)
+        return {};
+
+    if (const auto OVERVIEW = scrollOverviewForMonitor(monitor))
+        return {.overview = OVERVIEW, .created = false};
 
     if (!ensureScrollOverviewHooks())
-        return false;
+        return {};
 
     const bool PREVRENDERINGOVERVIEW = renderingOverview;
     renderingOverview                = true;
-    auto overview                    = makeShared<CScrollOverview>(monitor->m_activeWorkspace, false, monitor);
+    auto restoreRenderingOverview    = Hyprutils::Utils::CScopeGuard([PREVRENDERINGOVERVIEW] { renderingOverview = PREVRENDERINGOVERVIEW; });
+
+    auto overview = makeShared<CScrollOverview>(monitor->m_activeWorkspace, swipe, monitor);
     registerScrollOverview(overview);
-    renderingOverview = PREVRENDERINGOVERVIEW;
-    return true;
+    reconcileNativeDragHook();
+    return {.overview = overview, .created = true};
 }
 
 static SDispatchResult onOverviewDispatcher(std::string arg) {
@@ -282,6 +344,9 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
     if (ACTION != "toggle" && ACTION != "on" && ACTION != "open" && ACTION != "enable")
         return {.success = false, .error = "invalid arg. expected toggle|open|close|select [monitor|all]"};
 
+    if (ACTION == "toggle" && TARGET.empty() && closeCrossMonitorDragSession())
+        return {};
+
     const auto MONITORS = overviewTargetMonitors(TARGET);
     if (MONITORS.empty())
         return {.success = false, .error = TARGET.empty() ? "no active monitor" : "monitor not found: " + TARGET};
@@ -300,7 +365,7 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
     }
 
     for (const auto& monitor : MONITORS) {
-        if (!openOverview(monitor))
+        if (!openOverview(monitor).overview)
             return {.success = false, .error = "failed enabling overview hooks (is other overview plugin enabled?)"};
     }
     return {};
@@ -333,6 +398,77 @@ static SDispatchResult onWindowDispatcher(std::string arg) {
 
 static void failNotif(const std::string& reason) {
     HyprlandAPI::addNotification(SCROLLOVERVIEW_HANDLE, "[scrolloverview] Failure in initialization: " + reason, CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+}
+
+static void warnNativeDragUnavailable() {
+    if (g_scrollMoveMouseHookWarned)
+        return;
+
+    g_scrollMoveMouseHookWarned = true;
+    HyprlandAPI::addNotification(
+        SCROLLOVERVIEW_HANDLE,
+        "[scrolloverview] cross-monitor drag is enabled, but Hyprland drag adoption is unavailable; overview-origin cross-monitor dragging remains available",
+        CHyprColor{1.0, 0.75, 0.2, 1.0}, 7500);
+}
+
+static void disableNativeDragHook() {
+    if (!g_scrollMoveMouseHookActive)
+        return;
+
+    if (g_pScrollMoveMouseHook && g_pScrollMoveMouseHook->unhook())
+        g_scrollMoveMouseHookActive = false;
+}
+
+static void* findOptionalFn(const std::string& name, const std::string_view demangledNeedle) {
+    try {
+        const auto FNS = HyprlandAPI::findFunctionsByName(SCROLLOVERVIEW_HANDLE, name);
+        std::vector<SFunctionMatch> matches;
+        matches.reserve(FNS.size());
+        for (const auto& fn : FNS) {
+            if (fn.demangled.find(demangledNeedle) != std::string::npos)
+                matches.emplace_back(fn);
+        }
+
+        return matches.size() == 1 ? matches.front().address : nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+static void reconcileNativeDragHook() {
+    const bool REQUESTED = !g_unloading && g_scrollOverviewHooksActive && !scrollOverviews().empty() && ScrollOverview::Config::getCrossMonitorDrag();
+
+    if (!REQUESTED) {
+        disableNativeDragHook();
+        return;
+    }
+
+    if (g_scrollMoveMouseHookActive)
+        return;
+
+    try {
+        if (!g_pScrollMoveMouseHook && !g_scrollMoveMouseHookUnavailable) {
+            const auto ADDRESS = findOptionalFn("moveMouse", "CLayoutManager::moveMouse(");
+            if (ADDRESS)
+                g_pScrollMoveMouseHook = HyprlandAPI::createFunctionHook(SCROLLOVERVIEW_HANDLE, ADDRESS, rc<void*>(hkMoveMouse));
+
+            if (!g_pScrollMoveMouseHook)
+                g_scrollMoveMouseHookUnavailable = true;
+        }
+
+        if (!g_scrollMoveMouseHookUnavailable && g_pScrollMoveMouseHook) {
+            if (g_pScrollMoveMouseHook->hook()) {
+                g_scrollMoveMouseHookActive = true;
+                return;
+            }
+
+            g_scrollMoveMouseHookUnavailable = true;
+        }
+    } catch (...) {
+        g_scrollMoveMouseHookUnavailable = true;
+    }
+
+    warnNativeDragUnavailable();
 }
 
 // Helper function to find a function by name and ensure it contains one of the requested substrings in its demangled name (to disambiguate overloads).
@@ -523,6 +659,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             overview->onPreRender();
     });
 
+    g_configReloadHook = Event::bus()->m_events.config.reloaded.listen([] { reconcileNativeDragHook(); });
+
     ScrollOverview::Config::registerDispatcher("overview", ::onOverviewDispatcher);
     ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
     ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
@@ -536,6 +674,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     g_pHyprRenderer->m_renderPass.removeAllOfType("CScrollOverviewPassElement");
 
     g_unloading = true;
+    g_configReloadHook.reset();
     clearScrollOverviews();
     disableScrollOverviewHooks();
 

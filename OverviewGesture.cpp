@@ -1,6 +1,7 @@
 #include "OverviewGesture.hpp"
 
 #include "scrollOverview.hpp"
+#include "OverviewOpen.hpp"
 
 #include <algorithm>
 #include <hyprland/src/Compositor.hpp>
@@ -17,15 +18,11 @@ void COverviewGesture::begin(const ITrackpadGesture::STrackpadGestureBegin& e) {
     if (!MONITOR)
         return;
 
-    auto       overview = scrollOverviewForMonitor(MONITOR);
+    const auto [overview, created] = openOverview(MONITOR, true);
+    if (!overview)
+        return;
 
-    if (!overview) {
-        if (!ensureScrollOverviewHooks())
-            return;
-
-        overview = makeShared<CScrollOverview>(MONITOR->m_activeWorkspace, true, MONITOR);
-        registerScrollOverview(overview);
-    } else {
+    if (!created) {
         overview->selectHoveredWorkspace();
         overview->setClosing(true);
     }

@@ -10,7 +10,7 @@ hl.config({
             gesture_distance = 300, -- how far is the "max" for the gesture
             scale = 0.5, -- preferred overview scale
             workspace_gap = 100,
-            layout = "vertical", -- vertical or horizontal
+            layout = "vertical", -- vertical, horizontal, or auto (per-monitor orientation)
             wallpaper = 2, -- 0: global only, 1: per-workspace only, 2: both
             blur = true, -- blur only the main overview wallpaper
 
@@ -35,7 +35,8 @@ end)
 | gesture_distance | number | how far is the max for the gesture | `200` |
 | scale | float | overview scale, [0.1–0.9] | `0.5` |
 | workspace_gap | number | gap between visible workspaces in the overview, in pixels | `0` |
-| layout | string | overview layout: `vertical` or `horizontal` | `vertical` |
+| layout | string | overview layout: `vertical`, `horizontal`, or `auto`; auto uses horizontal on portrait monitors and vertical on landscape monitors | `vertical` |
+| cross_monitor_drag | bool | enable cross-monitor overview dragging and Hyprland move-drag adoption; does not affect `open all`, `toggle all`, or manually opened overviews | `false` |
 | wallpaper | int | wallpaper mode: `0` global only, `1` per-workspace only, `2` both | `0` |
 | blur | bool | blur the main overview wallpaper without blurring workspace wallpapers | `false` |
 | input | structure | input configuration subcategory; accepts a structure containing the properties listed below | see below |

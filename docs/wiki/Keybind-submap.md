@@ -29,4 +29,10 @@ for i = 1, 10 do
 end
 ```
 
+For native drag adoption with `cross_monitor_drag = true`, add this optional submap bind:
+
+```lua
+hl.bind("SUPER + mouse:272", hl.dsp.window.drag(), { mouse = true })
+```
+
 [Back to Configuration](Configuration.md)
