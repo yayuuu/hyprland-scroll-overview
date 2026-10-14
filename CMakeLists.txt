@@ -7,9 +7,21 @@ project(scrolloverview
 
 set(CMAKE_CXX_STANDARD 23)
 
-file(GLOB_RECURSE SRC "*.cpp")
+file(GLOB SRC CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 add_library(scrolloverview SHARED ${SRC})
+target_compile_options(scrolloverview PRIVATE -fno-gnu-unique)
+if(SCROLLOVERVIEW_TESTING)
+    target_compile_definitions(scrolloverview PRIVATE SCROLLOVERVIEW_TESTING)
+endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    if(NOT DOBBY_SOURCE OR NOT DOBBY_LIBRARY)
+        message(FATAL_ERROR "ARM64 experiment requires DOBBY_SOURCE and DOBBY_LIBRARY")
+    endif()
+    target_include_directories(scrolloverview PRIVATE "${DOBBY_SOURCE}/include")
+    target_link_libraries(scrolloverview PRIVATE "${DOBBY_LIBRARY}" dl pthread)
+    target_link_options(scrolloverview PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
 
 set(VERSION_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(VERSION_HEADER "${VERSION_HEADER_DIR}/PluginVersion.hpp")

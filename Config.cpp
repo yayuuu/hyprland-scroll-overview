@@ -386,6 +386,7 @@ void registerGesture(TGestureRegistrar gestureRegistrar, TGestureKeyword gesture
 
     g_gestureRegistrar = gestureRegistrar;
     HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", "gesture", ::gestureLua);
+    HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", "native_gesture", ::gestureLua);
 }
 
 static void registerLuaFunctions() {
@@ -404,6 +405,12 @@ static void defineConfigValues() {
 
     addValue(makeShared<CIntValue>("plugin:scrolloverview:gesture_distance", "gesture distance in pixels", 200, SIntValueOptions{.min = 1}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:swap_effect", "desktop swap feedback: nudge, zoom or none", Hyprlang::STRING{"nudge"}));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:swap_effect_up", "optional upward swap effect override", Hyprlang::STRING{""}));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:swap_effect_down", "optional downward swap effect override", Hyprlang::STRING{""}));
+    addValue(makeShared<CFloatValue>("plugin:scrolloverview:swap_nudge", "nudge as a fraction of monitor size", 0.06F, SFloatValueOptions{.min = 0.F, .max = 0.25F}));
+    addValue(makeShared<CFloatValue>("plugin:scrolloverview:swap_zoom", "fractional reduction in desktop scale", 0.05F, SFloatValueOptions{.min = 0.F, .max = 0.4F}));
+    addValue(makeShared<CIntValue>("plugin:scrolloverview:swap_duration", "swap feedback duration in milliseconds", 280, SIntValueOptions{.min = 80, .max = 1000}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));

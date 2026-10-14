@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <numbers>
 #include <unordered_set>
 #include <linux/input-event-codes.h>
 #include <state/MonitorState.hpp>
@@ -24,6 +25,7 @@
 #include <hyprland/src/animation/AnimationManager.hpp>
 #include <hyprland/src/managers/EventManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/managers/input/UnifiedWorkspaceSwipeGesture.hpp>
 #include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
@@ -979,14 +981,15 @@ CScrollOverview::~CScrollOverview() {
     backdropBlurFB.reset();
     const auto MONITOR = pMonitor.lock();
     const auto WORKSPACE = MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{};
-    emitFullscreenVisibilityState(getOverviewFullscreenVisibilityWindow(WORKSPACE, Desktop::focusState()->window()), false);
+    if (!feedbackOnly)
+        emitFullscreenVisibilityState(getOverviewFullscreenVisibilityWindow(WORKSPACE, Desktop::focusState()->window()), false);
     restoreWorkspaceAnimationOverrides();
     restoreInputConfigOverrides();
     restoreForcedSurfaceVisibility();
     restoreForcedWindowVisibility();
     restoreForcedLayerVisibility();
     images.clear(); // otherwise we get a vram leak
-    if (scrollOverviews().empty()) {
+    if (scrollOverviews().empty() && !feedbackOnly) {
         restoreActiveWorkspaceVisibility();
         Pointer::Cursor::overrideController->unsetOverride(Pointer::Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
     }
@@ -994,20 +997,23 @@ CScrollOverview::~CScrollOverview() {
         MONITOR->m_blurFBDirty = true;
 }
 
-CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITOR monitor_) : startedOn(startedOn_), swipe(swipe_) {
+CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITOR monitor_, bool feedback) : startedOn(startedOn_), feedbackOnly(feedback), swipe(swipe_) {
     const auto          PMONITOR = monitor_ ? monitor_ : (startedOn_ && startedOn_->m_monitor ? startedOn_->m_monitor.lock() : Desktop::focusState()->monitor());
     pMonitor                     = PMONITOR;
     layout                       = ScrollOverview::Config::getLayout(pMonitor.lock());
     if (layout == ScrollOverview::Config::ELayout::AUTO)
         layout = PMONITOR && PMONITOR->logicalBox().height > PMONITOR->logicalBox().width ? ScrollOverview::Config::ELayout::HORIZONTAL : ScrollOverview::Config::ELayout::VERTICAL;
-    sharedStateOwner             = scrollOverviews().empty();
+    sharedStateOwner             = !feedbackOnly && scrollOverviews().empty();
     usesSubmapKeybinds           = hasOverviewSubmap();
 
-    applyWorkspaceAnimationOverrides();
+    if (!feedbackOnly)
+        applyWorkspaceAnimationOverrides();
     if (sharedStateOwner)
         forceWorkspaceAlphaVisible();
-    applyInputConfigOverrides();
-    g_pInputManager->unconstrainMouse();
+    if (!feedbackOnly) {
+        applyInputConfigOverrides();
+        g_pInputManager->unconstrainMouse();
+    }
     realtimePreviewTimer = wl_event_loop_add_timer(g_pCompositor->m_wlEventLoop, realtimePreviewTimerCallback, this);
     scheduleMinimumPreviewFrame();
 
@@ -1046,6 +1052,12 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
 
     if (!swipe)
         *scale = ScrollOverview::Config::getScale(pMonitor.lock());
+
+    if (feedbackOnly) {
+        redrawAll();
+        viewportCurrentWorkspace = activeWorkspaceIndex();
+        return; // Render-only scene: no input listeners, submap, focus or cursor changes.
+    }
 
     const auto initialFullscreenWindow =
         PMONITOR && PMONITOR->m_activeWorkspace ? getOverviewWindowToShow(Fullscreen::controller()->getFullscreenWindow(PMONITOR->m_activeWorkspace)) : PHLWINDOW{};
@@ -1833,7 +1845,8 @@ float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activ
         std::max(scale->value(), 0.01F);
     const auto LOGICALPITCH        = MONITOR ? getWorkspaceLogicalPitch(MONITOR, RENDERSCALE, layout) : workspacePitch / std::max(RENDERSCALE * MONITORSCALE, 0.01F);
     const auto RENDEREDLOGICALUNIT = RENDERSCALE * MONITORSCALE;
-    const auto DEFAULTOFFSET       = workspaceOverviewLogicalOffset(workspaceIdx, activeIdx, LOGICALPITCH) * RENDEREDLOGICALUNIT;
+    const float FOREGROUNDNUDGE = feedbackOnly && workspaceIdx < images.size() && images[workspaceIdx]->pWorkspace == startedOn ? feedbackNudge * RENDEREDLOGICALUNIT : 0.F;
+    const auto DEFAULTOFFSET       = workspaceOverviewLogicalOffset(workspaceIdx, activeIdx, LOGICALPITCH) * RENDEREDLOGICALUNIT + FOREGROUNDNUDGE;
 
     if (!workspaceInsertTransition.active || workspaceIdx >= images.size() || !images[workspaceIdx] || !images[workspaceIdx]->pWorkspace)
         return DEFAULTOFFSET;
@@ -1848,10 +1861,10 @@ float CScrollOverview::workspaceOverviewOffset(size_t workspaceIdx, size_t activ
 
     if (const auto OLDIT = workspaceInsertTransition.oldRelativeOffsets.find(WORKSPACEID); OLDIT != workspaceInsertTransition.oldRelativeOffsets.end()) {
         const float OLDOFFSET = OLDIT->second * RENDEREDLOGICALUNIT;
-        return OLDOFFSET + (NEWOFFSET - OLDOFFSET) * T;
+        return OLDOFFSET + (NEWOFFSET - OLDOFFSET) * T + FOREGROUNDNUDGE;
     }
 
-    return NEWOFFSET;
+    return NEWOFFSET + FOREGROUNDNUDGE;
 }
 
 float CScrollOverview::workspaceOverviewLogicalOffset(size_t workspaceIdx, size_t activeIdx, float workspacePitch) const {
@@ -1911,6 +1924,7 @@ void CScrollOverview::rebuildWorkspaceImages() {
             continue;
 
         images.emplace_back(makeShared<SWorkspaceImage>(WORKSPACE));
+        images.back()->idAtBuild = WORKSPACE->m_id;
     }
 
     std::sort(images.begin(), images.end(), [](const auto& a, const auto& b) { return a->pWorkspace->m_id < b->pWorkspace->m_id; });
@@ -3620,6 +3634,7 @@ void CScrollOverview::finishWorkspaceScrollFollow() {
 }
 
 void CScrollOverview::syncSelectionToViewport() {
+    if (feedbackOnly) { closeOnWindow.reset(); return; }
     if (images.empty() || viewportCurrentWorkspace >= images.size()) {
         closeOnWindow.reset();
         return;
@@ -4111,7 +4126,7 @@ void CScrollOverview::transferSharedStateOwnership() {
     CScrollOverview* successor = nullptr;
     for (const auto& overview : scrollOverviews()) {
         auto* candidate = overview ? dynamic_cast<CScrollOverview*>(overview.get()) : nullptr;
-        if (candidate && candidate != this && !candidate->closing) {
+        if (candidate && candidate != this && !candidate->closing && !candidate->feedbackOnly) {
             successor = candidate;
             break;
         }
@@ -4216,7 +4231,7 @@ void CScrollOverview::renderWorkspaceBackground(PHLMONITOR monitor, size_t works
 
     renderOverviewWorkspaceShadow(monitor, WORKSPACEBOX, renderScale, wallpaperMode == 0, WORKSPACEALPHA);
 
-    if (ScrollOverview::Config::getBlur(pMonitor.lock()) && wallpaperMode != 1 && WORKSPACEALPHA > 0.001F)
+    if (!feedbackOnly && ScrollOverview::Config::getBlur(pMonitor.lock()) && wallpaperMode != 1 && WORKSPACEALPHA > 0.001F)
         OverviewRender::queueBlur(WORKSPACEBOX, 0, 2.F, WORKSPACEALPHA, false);
 
     if (wallpaperMode != 0 && WORKSPACEALPHA > 0.001F)
@@ -4605,7 +4620,7 @@ bool CScrollOverview::shouldAllowRealtimePreviewSchedule() {
     if (closing)
         return true;
 
-    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated())
+    if ((feedbackOnly && feedbackProgress && feedbackProgress->isBeingAnimated()) || scale->isBeingAnimated() || viewOffset->isBeingAnimated())
         return true;
 
     if (realtimePreviewFrameQueued) {
@@ -4663,7 +4678,7 @@ int CScrollOverview::realtimePreviewTimerCallback(void* data) {
 }
 
 bool CScrollOverview::hasRunningWorkspaceAnimation() const {
-    return viewOffset->isBeingAnimated() || workspaceInsertProgress->isBeingAnimated() || workspaceInsertFadeProgress->isBeingAnimated();
+    return (feedbackOnly && feedbackProgress && feedbackProgress->isBeingAnimated()) || viewOffset->isBeingAnimated() || workspaceInsertProgress->isBeingAnimated() || workspaceInsertFadeProgress->isBeingAnimated();
 }
 
 bool CScrollOverview::shouldSuppressRenderDamage() const {
@@ -4671,7 +4686,7 @@ bool CScrollOverview::shouldSuppressRenderDamage() const {
     if (!MONITOR || closing)
         return false;
 
-    if (scale->isBeingAnimated() || viewOffset->isBeingAnimated())
+    if ((feedbackOnly && feedbackProgress && feedbackProgress->isBeingAnimated()) || scale->isBeingAnimated() || viewOffset->isBeingAnimated())
         return false;
 
     const auto ACTIVEIDX = activeWorkspaceIndex();
@@ -5035,6 +5050,7 @@ void CScrollOverview::dismissTransient() {
 }
 
 void CScrollOverview::close(ECloseMode mode) {
+    if (feedbackOnly) { finishSwapFeedback(); return; }
     if (closeApplied)
         return;
     closeApplied = true;
@@ -5200,7 +5216,157 @@ void CScrollOverview::reopen() {
     damage();
 }
 
+void CScrollOverview::onWorkspaceIDsChanged() {
+    if (closing || !pMonitor || std::ranges::none_of(images, [](const auto& image) {
+        return image && image->pWorkspace && image->idAtBuild != image->pWorkspace->m_id;
+    }))
+        return;
+
+    // Capture the displayed positions before sorting. IDs have already changed,
+    // so use the image's previous ID to sample an in-flight reorder animation.
+    std::unordered_map<WORKSPACEID, float> previousOffsets;
+    const auto pitch = getWorkspaceLogicalPitch(pMonitor.lock(), scale->value(), layout);
+    const auto active = activeWorkspaceIndex();
+    const auto translation = layout == ScrollOverview::Config::ELayout::HORIZONTAL ? viewOffset->value().x : viewOffset->value().y;
+    for (size_t i = 0; i < images.size(); ++i) {
+        const auto& image = images[i];
+        float offset = workspaceOverviewLogicalOffset(i, active, pitch);
+        const auto old = workspaceInsertTransition.oldRelativeOffsets.find(image->idAtBuild);
+        const auto next = workspaceInsertTransition.newRelativeOffsets.find(image->idAtBuild);
+        if (workspaceInsertTransition.active && old != workspaceInsertTransition.oldRelativeOffsets.end() && next != workspaceInsertTransition.newRelativeOffsets.end())
+            offset = old->second + (next->second - old->second) * std::clamp(workspaceInsertProgress->value(), 0.F, 1.F);
+        previousOffsets[image->pWorkspace->m_id] = offset + translation;
+    }
+
+    auto previous = std::move(rememberedSelection);
+    rememberedSelection.clear();
+    for (const auto& [id, ref] : previous) {
+        const auto window = ref.lock();
+        if (window && window->m_workspace)
+            rememberedSelection[window->m_workspace->m_id] = window;
+    }
+    rebuildPending = false;
+    markBlurDirty();
+    redrawAll();
+    workspaceInsertTransition = {};
+    workspaceInsertTransition.active = true;
+    workspaceInsertTransition.oldRelativeOffsets = std::move(previousOffsets);
+    const auto newActive = activeWorkspaceIndex();
+    const auto newPitch = getWorkspaceLogicalPitch(pMonitor.lock(), scale->value(), layout);
+    for (size_t i = 0; i < images.size(); ++i)
+        workspaceInsertTransition.newRelativeOffsets[images[i]->pWorkspace->m_id] = workspaceOverviewLogicalOffset(i, newActive, newPitch);
+    workspaceInsertFadeProgress->setValueAndWarp(1.F);
+    workspaceInsertProgress->setValueAndWarp(0.F);
+    *workspaceInsertProgress = 1.F;
+    viewOffset->setValueAndWarp(Vector2D{});
+    syncSelectionToViewport();
+    damage();
+}
+
+void CScrollOverview::finishSwapFeedback() {
+    if (!feedbackOnly)
+        return;
+    if (feedbackProgress)
+        feedbackProgress->setCallbackOnEnd({});
+    closing = true;
+    closeRemovalPending = true;
+    removeOverview(this);
+}
+
+void CScrollOverview::startSwapFeedback(int direction, const std::unordered_map<WORKSPACEID, WORKSPACEID>& previousIDs) {
+    if (!feedbackOnly || !pMonitor)
+        return;
+    feedbackDirection = direction;
+    feedbackMode = ScrollOverview::Config::getValue<Hyprlang::STRING>("plugin:scrolloverview:swap_effect", pMonitor.lock());
+    const std::string override = ScrollOverview::Config::getValue<Hyprlang::STRING>(direction < 0 ? "plugin:scrolloverview:swap_effect_up" : "plugin:scrolloverview:swap_effect_down", pMonitor.lock());
+    if (!override.empty())
+        feedbackMode = override;
+    if (feedbackMode != "nudge" && feedbackMode != "zoom") { finishSwapFeedback(); return; }
+    feedbackAmount = ScrollOverview::Config::getValue<float>(feedbackMode == "zoom" ? "plugin:scrolloverview:swap_zoom" : "plugin:scrolloverview:swap_nudge", pMonitor.lock());
+    if (feedbackAmount <= 0.F) { finishSwapFeedback(); return; }
+    if (closeRemovalIdle) {
+        wl_event_source_remove(closeRemovalIdle);
+        closeRemovalIdle = nullptr;
+    }
+    const bool restarting = !!feedbackProgress;
+    feedbackStartScale = scale->value();
+    feedbackStartNudge = feedbackNudge;
+    if (restarting) {
+        onWorkspaceIDsChanged(); // Samples current animated positions before re-sorting.
+    } else {
+        auto order = images;
+        std::sort(order.begin(), order.end(), [&previousIDs](const auto& a, const auto& b) {
+            const auto old = [&previousIDs](const auto& image) {
+                const auto it = previousIDs.find(image->pWorkspace->m_id);
+                return it == previousIDs.end() ? image->pWorkspace->m_id : it->second;
+            };
+            return old(a) < old(b);
+        });
+        const auto oldActive = std::find_if(order.begin(), order.end(), [this](const auto& image) { return image->pWorkspace == startedOn; }) - order.begin();
+        const auto pitch = getWorkspaceLogicalPitch(pMonitor.lock(), 1.F, layout);
+        workspaceInsertTransition = {};
+        workspaceInsertTransition.active = true;
+        for (size_t i = 0; i < order.size(); ++i)
+            workspaceInsertTransition.oldRelativeOffsets[order[i]->pWorkspace->m_id] = (static_cast<float>(i) - oldActive) * pitch;
+        const auto active = activeWorkspaceIndex();
+        for (size_t i = 0; i < images.size(); ++i)
+            workspaceInsertTransition.newRelativeOffsets[images[i]->pWorkspace->m_id] = workspaceOverviewLogicalOffset(i, active, pitch);
+    }
+    workspaceInsertProgress->setValueAndWarp(0.F);
+    feedbackConfig = makeShared<Hyprutils::Animation::SAnimationPropertyConfig>();
+    feedbackConfig->overridden = true;
+    feedbackConfig->internalBezier = "linear";
+    feedbackConfig->internalSpeed = ScrollOverview::Config::getValue<int>("plugin:scrolloverview:swap_duration", pMonitor.lock()) / 100.F;
+    feedbackConfig->internalEnabled = true;
+    feedbackConfig->pValues = feedbackConfig;
+    if (!feedbackProgress)
+        Animation::mgr()->createAnimation(0.F, feedbackProgress, feedbackConfig, AVARDAMAGE_NONE);
+    else
+        feedbackProgress->setConfig(feedbackConfig);
+    feedbackProgress->setCallbackOnEnd({});
+    feedbackProgress->setValueAndWarp(0.F);
+    feedbackProgress->setUpdateCallback([this](auto) { damage(); });
+    *feedbackProgress = 1.F;
+    feedbackProgress->setCallbackOnEnd([this](auto) {
+        if (!closeRemovalIdle)
+            closeRemovalIdle = wl_event_loop_add_idle(g_pCompositor->m_wlEventLoop, [](void* data) {
+                auto* scene = static_cast<CScrollOverview*>(data);
+                scene->closeRemovalIdle = nullptr;
+                scene->finishSwapFeedback();
+            }, this);
+    });
+    damage();
+}
+
 void CScrollOverview::onPreRender() {
+    if (feedbackOnly) {
+        if (!pMonitor || pMonitor->m_activeWorkspace != startedOn || pMonitor->m_activeSpecialWorkspace || g_pSessionLockManager->isSessionLocked() || g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
+            if (feedbackProgress) feedbackProgress->setCallbackOnEnd({});
+            if (!closeRemovalIdle)
+                closeRemovalIdle = wl_event_loop_add_idle(g_pCompositor->m_wlEventLoop, [](void* data) {
+                    auto* scene = static_cast<CScrollOverview*>(data);
+                    scene->closeRemovalIdle = nullptr;
+                    scene->finishSwapFeedback();
+                }, this);
+            return;
+        }
+        const float t = feedbackProgress ? std::clamp(feedbackProgress->value(), 0.F, 1.F) : 1.F;
+        // A continuous rounded crest, not a flat hold: linger near the top
+        // while still moving. Bias the peak earlier for a longer, gentler fall.
+        // Quintic easing also gives zero velocity/acceleration at both ends.
+        const float phase = t + 0.35F * t * (1.F - t);
+        const float eased = phase * phase * phase * (phase * (6.F * phase - 15.F) + 10.F);
+        const float crest = 2.F * eased - 1.F;
+        const float pulse = std::clamp(1.F - crest * crest * crest * crest, 0.F, 1.F);
+        const float settle = 1.F - t;
+        const float zoom = std::max((1.F - feedbackStartScale) * settle, feedbackMode == "zoom" ? feedbackAmount * pulse : 0.F);
+        scale->setValueAndWarp(1.F - zoom);
+        feedbackNudge = feedbackStartNudge * settle - (feedbackMode == "nudge" ? feedbackDirection * feedbackAmount * axisSize(pMonitor->m_size, layout) * pulse : 0.F);
+        const float travel = 0.5F - 0.5F * std::cos(t * std::numbers::pi_v<float>);
+        workspaceInsertProgress->setValueAndWarp(travel);
+        pMonitor->m_solitaryClient.reset();
+        return;
+    }
     if (pMonitor)
         pMonitor->m_solitaryClient.reset();
 
@@ -5353,6 +5519,25 @@ void CScrollOverview::render() {
 
     const auto WALLPAPERMODE = ScrollOverview::Config::getWallpaperMode(pMonitor.lock());
 
+    if (feedbackOnly) {
+        renderGlobalWallpaper(MONITOR, NOW);
+        Event::bus()->m_events.render.stage.emit(RENDER_POST_WALLPAPER);
+        const auto drawCard = [&](size_t index) {
+            renderWorkspaceBackground(MONITOR, index, ACTIVEIDX, PITCH, SCALE, 2, NOW);
+            renderWorkspaceLive(MONITOR, index, ACTIVEIDX, PITCH, SCALE, 2, NOW);
+        };
+        for (size_t i = 0; i < images.size(); ++i)
+            if (i != ACTIVEIDX) drawCard(i);
+        if (ACTIVEIDX < images.size()) drawCard(ACTIVEIDX);
+        renderPinnedFloatingWindows(MONITOR, SCALE, NOW);
+        for (const auto layer : {ZWLR_LAYER_SHELL_V1_LAYER_TOP, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY})
+            for (const auto& surface : MONITOR->m_layerSurfaceLayers[layer])
+                if (Desktop::View::validMapped(surface.lock()))
+                    g_pHyprRenderer->renderLayer(surface.lock(), MONITOR, NOW);
+        sendOverviewFrameCallbacks(NOW);
+        return;
+    }
+
     if (ScrollOverview::Config::getBlur(pMonitor.lock()) && WALLPAPERMODE != 1) {
         updateBackdropBlurCache(MONITOR, WALLPAPERMODE, NOW);
         if (backdropBlurFB && backdropBlurFB->isAllocated() && backdropBlurFB->getTexture())
@@ -5395,7 +5580,16 @@ void CScrollOverview::render() {
         overviewBlurDirty = false;
 
     for (size_t workspaceIdx = 0; workspaceIdx < images.size(); ++workspaceIdx) {
-        renderWorkspaceLive(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
+        if (workspaceIdx != ACTIVEIDX)
+            renderWorkspaceLive(MONITOR, workspaceIdx, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
+    }
+    // The focused workspace is the foreground card in either swap direction.
+    // Repaint its backing after the other cards as well as drawing its windows
+    // last, so their contents cannot bleed through its wallpaper or gaps.
+    if (ACTIVEIDX < images.size()) {
+        renderWorkspaceBackground(MONITOR, ACTIVEIDX, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
+        OverviewRender::flushPass(MONITOR);
+        renderWorkspaceLive(MONITOR, ACTIVEIDX, ACTIVEIDX, PITCH, SCALE, WALLPAPERMODE, NOW);
     }
 
     renderDraggedWindow(MONITOR, ACTIVEIDX, PITCH, SCALE, NOW);
