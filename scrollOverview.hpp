@@ -168,6 +168,7 @@ class CScrollOverview : public IOverview {
     void   schedulePreviewFrameAfter(std::chrono::milliseconds delay);
     void   scheduleRealtimePreviewFrame();
     void   releaseInputListeners();
+    void   scheduleCloseRemoval();
     void   activateSubmapIfConfigured();
     void   restoreSubmapIfActive();
     bool   dispatchSubmapMouseClick(uint32_t button);
