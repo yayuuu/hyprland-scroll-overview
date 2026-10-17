@@ -19,7 +19,6 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
-#include <hyprland/src/config/lua/ConfigManager.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
@@ -64,7 +63,6 @@
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
 #include <hyprland/src/render/decorations/DecorationPositioner.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
-#include <hyprutils/string/Numeric.hpp>
 #undef protected
 #undef private
 #include "Config.hpp"
@@ -5545,10 +5543,8 @@ bool CScrollOverview::dispatchSubmapMouseClick(uint32_t button) {
     if (KEYBIND == BINDS.end())
         return false;
 
-    const auto INDEX = Hyprutils::String::strToNumber<int>((*KEYBIND)->metadata().argument);
-    const auto MGR   = Config::Lua::mgr();
-    if (!INDEX || !MGR)
-        return false;
+    // Keep the callback alive if it removes its own binding.
+    const auto BIND = *KEYBIND;
 
     auto&      actionState          = *Config::Actions::state();
     const int PREVIOUSPASSPRESSED   = actionState.m_passPressed;
@@ -5566,7 +5562,7 @@ bool CScrollOverview::dispatchSubmapMouseClick(uint32_t button) {
         actionState.m_lastMouseCode       = PREVIOUSMOUSECODE;
     });
 
-    const auto RESULT = MGR->callLuaFnBind(*INDEX);
+    const auto RESULT = BIND->invoke();
     return RESULT.success;
 }
 
