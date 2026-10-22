@@ -11,8 +11,14 @@ endif
 
 .PHONY: all clean FORCE
 
+ifneq ($(filter aarch64 arm64,$(shell uname -m)),)
+all:
+	bash scripts/build-arm64.sh
+else
 all: $(VERSION_HEADER)
 	$(CXX) -shared -fPIC $(EXTRA_FLAGS) -I.build main.cpp Config.cpp DropIndicator.cpp NativeDrag.cpp OverviewGesture.cpp OverviewManager.cpp OverviewPassElement.cpp OverviewRender.cpp Window.cpp scrollOverview.cpp -o scrolloverview.so -g `pkg-config --cflags pixman-1 libdrm hyprland pangocairo libinput libudev wayland-server xkbcommon '$(LUA_PKG) >= 5.4'` -std=c++2b -Wno-narrowing
+
+endif
 
 $(VERSION_HEADER): FORCE $(VERSION_SCRIPT)
 	sh $(VERSION_SCRIPT) $@ .
