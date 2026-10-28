@@ -14,6 +14,7 @@ class IOverview {
     IOverview()          = default;
     virtual ~IOverview() = default;
 
+    virtual bool  isSwapFeedback() const { return false; }
     virtual void  render()           = 0;
     virtual void  damage()           = 0;
     virtual void  requestInputFrame() = 0;

@@ -2,10 +2,12 @@
 
 #include <hyprland/src/managers/input/trackpad/gestures/ITrackpadGesture.hpp>
 #include "IOverview.hpp"
+#include "GestureProgress.hpp"
+#include <vector>
 
 class COverviewGesture : public ITrackpadGesture {
   public:
-    COverviewGesture()              = default;
+    COverviewGesture(bool closeOnly = false, bool all = false) : m_closeOnly(closeOnly), m_all(all) {}
     ~COverviewGesture() override = default;
 
     void begin(const ITrackpadGesture::STrackpadGestureBegin& e) override;
@@ -13,7 +15,11 @@ class COverviewGesture : public ITrackpadGesture {
     void end(const ITrackpadGesture::STrackpadGestureEnd& e) override;
 
   private:
-    float m_lastDelta   = 0.F;
+    bool m_closeOnly = false;
+    bool m_all = false;
+    struct Entry { WP<IOverview> overview; bool startedOpen; };
+    std::vector<Entry> m_entries;
+    GestureProgress m_progress;
     bool  m_firstUpdate = false;
-    WP<IOverview> m_overview;
+
 };
