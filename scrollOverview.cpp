@@ -1650,7 +1650,8 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
                 moveSelection("down");
                 break;
             case XKB_KEY_Return:
-            case XKB_KEY_KP_Enter: closeAll(); break;
+            case XKB_KEY_KP_Enter:
+            case XKB_KEY_Escape: closeAll(); break;
             default: return;
         }
 
