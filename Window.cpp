@@ -1010,7 +1010,7 @@ void renderOverviewWindow(const SRenderParams& params) {
     const auto underDecos =
         renderOverviewCustomDecorations(params.monitor, params.window, params.workspaceBox ? *params.workspaceBox : CBox{}, params.windowBox, metrics, DECORATION_LAYER_UNDER);
     if (underDecos.queuedAny) {
-        OverviewRender::flushPass(params.monitor);
+        OverviewRender::flushPass(g_pHyprRenderer->context(), params.monitor);
         for (auto it = underDecos.restoreFns.rbegin(); it != underDecos.restoreFns.rend(); ++it)
             (*it)();
     }
@@ -1061,7 +1061,7 @@ void renderOverviewWindow(const SRenderParams& params) {
         renderOverviewWindowBorder(params.monitor, params.window, params.windowBox, metrics, params.selected);
 
     raiseWindowPopups(params.window, firstWindowPassElement);
-    OverviewRender::flushPass(params.monitor);
+    OverviewRender::flushPass(g_pHyprRenderer->context(), params.monitor);
 }
 
 } // namespace OverviewWindow

@@ -16,6 +16,7 @@
 #define private public
 #define protected public
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/SceneResources.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
@@ -1751,17 +1752,17 @@ void CScrollOverview::renderWallpaperLayers(PHLMONITOR monitor, const CBox& work
     renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, workspaceBox, renderScale, now, alpha);
 }
 
-void CScrollOverview::renderGlobalWallpaper(PHLMONITOR monitor, const Time::steady_tp& now) {
+void CScrollOverview::renderGlobalWallpaper(Render::CRenderContext& ctx, PHLMONITOR monitor, const Time::steady_tp& now) {
     if (!monitor)
         return;
 
-    g_pHyprRenderer->renderBackground(g_pHyprRenderer->context(), monitor);
+    g_pHyprRenderer->renderBackground(ctx, monitor);
 
     for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
         if (!Desktop::View::validMapped(ls.lock()))
             continue;
 
-        g_pHyprRenderer->renderLayer(g_pHyprRenderer->context(), ls.lock(), monitor, now);
+        g_pHyprRenderer->renderLayer(ctx, ls.lock(), monitor, now);
     }
 }
 
@@ -1774,9 +1775,14 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
         lastBackdropWallpaperMode = wallpaperMode;
     }
 
+    auto&      monitorContext = g_pHyprRenderer->context();
+    if (!monitorContext.m_data.currentFB)
+        return;
+
     const auto FBSIZE     = monitor->m_transformedSize;
     const auto RENDERSIZE = monitor->m_transformedSize;
-    const auto FBFORMAT   = g_pHyprRenderer->context().m_data.currentFB->m_drmFormat;
+    const auto FBFORMAT  = monitorContext.m_data.currentFB->m_drmFormat;
+    const auto DESC      = NColorManagement::getDefaultImageDescription();
     if (!backdropBlurFB)
         backdropBlurFB = g_pHyprRenderer->createFB("scrolloverview_backdrop_blur");
 
@@ -1788,36 +1794,62 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
         backdropBlurDirty = true;
     }
 
+    if (backdropBlurFB->imageDescription() != DESC)
+        backdropBlurDirty = true;
+
     if (!backdropBlurDirty)
         return;
 
-    if (g_pHyprRenderer->context().m_data.currentFB)
-        backdropBlurFB->setImageDescription(g_pHyprRenderer->context().m_data.currentFB->imageDescription());
+    // Cache the wallpaper and blur before monitor HDR mapping. Reusing an HDR work-buffer
+    // texture skips CM when compositing it, copying HDR values into the SDR mirror as well.
+    // An explicit SDR scene also keeps the blur provider's scratch buffers in this space.
+    backdropBlurFB->setImageDescription(DESC);
+    auto resources = makeShared<Render::CSceneResources>(nullptr, Render::SSceneBufferDescription{.format = FBFORMAT, .imageDescription = DESC});
+    Render::CRenderContext cacheContext;
+    if (!cacheContext.begin(resources))
+        return;
+
+    cacheContext.m_data                 = monitorContext.m_data;
+    cacheContext.m_data.mainFB          = backdropBlurFB;
+    cacheContext.m_data.outFB           = backdropBlurFB;
+    cacheContext.m_data.renderModif     = {};
+    cacheContext.m_data.clipBox         = {};
+    cacheContext.m_data.currentWindow.reset();
+    cacheContext.m_data.surface.reset();
+    cacheContext.m_mode                 = Render::RENDER_MODE_TO_BUFFER_READ_ONLY;
+    cacheContext.m_blockSurfaceFeedback = true;
+
+    // Keep source buffers alive until the enclosing monitor frame has finished using them.
+    auto transferBufferUses = Hyprutils::Utils::CScopeGuard([&] {
+        for (auto& buffer : cacheContext.m_usedAsyncBuffers)
+            monitorContext.m_usedAsyncBuffers.emplace_back(std::move(buffer));
+        cacheContext.m_usedAsyncBuffers.clear();
+    });
 
     const CRegion fullDamage{CBox{0, 0, RENDERSIZE.x, RENDERSIZE.y}};
 
     {
-        auto bindBackdrop = g_pHyprRenderer->bindTempFB(g_pHyprRenderer->context(), backdropBlurFB);
-        g_pHyprRenderer->draw(g_pHyprRenderer->context(), CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 1.F}}, fullDamage);
-        renderGlobalWallpaper(monitor, now);
-        OverviewRender::flushPass(monitor);
+        auto bindBackdrop = g_pHyprRenderer->bindTempFB(cacheContext, backdropBlurFB);
+        g_pHyprRenderer->draw(cacheContext, CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 1.F}}, fullDamage);
+        renderGlobalWallpaper(cacheContext, monitor, now);
+        OverviewRender::flushPass(cacheContext, monitor);
     }
 
     auto         blurDamage = fullDamage;
     SP<Render::ITexture> BLURREDTEX;
     {
-        auto bindBackdrop = g_pHyprRenderer->bindTempFB(g_pHyprRenderer->context(), backdropBlurFB);
-        const auto blurredFB = g_pHyprRenderer->blurMainFramebuffer(g_pHyprRenderer->context(), 1.F, blurDamage);
+        auto bindBackdrop = g_pHyprRenderer->bindTempFB(cacheContext, backdropBlurFB);
+        const auto blurredFB = g_pHyprRenderer->blurMainFramebuffer(cacheContext, 1.F, blurDamage);
         BLURREDTEX = blurredFB ? blurredFB->getTexture() : nullptr;
     }
     if (!BLURREDTEX || !BLURREDTEX->m_size.x || !BLURREDTEX->m_size.y)
         return;
 
     {
-        auto bindBackdrop = g_pHyprRenderer->bindTempFB(g_pHyprRenderer->context(), backdropBlurFB);
-        g_pHyprRenderer->draw(g_pHyprRenderer->context(), CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 0.F}}, fullDamage);
+        auto bindBackdrop = g_pHyprRenderer->bindTempFB(cacheContext, backdropBlurFB);
+        g_pHyprRenderer->draw(cacheContext, CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 0.F}}, fullDamage);
 
-        g_pHyprRenderer->draw(g_pHyprRenderer->context(), 
+        g_pHyprRenderer->draw(cacheContext,
             CTexPassElement::SRenderData{
                 .tex    = BLURREDTEX,
                 .box    = CBox{0, 0, RENDERSIZE.x, RENDERSIZE.y},
@@ -4355,7 +4387,7 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
 
     if (!scrollingLayout && hasFullscreenPath) {
         renderOverviewWindow(fullscreenWindow);
-        OverviewRender::flushPass(monitor);
+        OverviewRender::flushPass(g_pHyprRenderer->context(), monitor);
         for (const auto& windowRef : workspaceImage->windows) {
             const auto window = getOverviewWindowToShow(windowRef.lock());
             if (!shouldShowOverviewWindow(window) || !window->isFloating() || window == fullscreenWindow)
@@ -5441,9 +5473,9 @@ void CScrollOverview::render() {
         if (backdropBlurFB && backdropBlurFB->isAllocated() && backdropBlurFB->getTexture())
             renderBackdropBlurCache(MONITOR);
         else
-            renderGlobalWallpaper(MONITOR, NOW);
+            renderGlobalWallpaper(g_pHyprRenderer->context(), MONITOR, NOW);
     } else if (WALLPAPERMODE == 0 || WALLPAPERMODE == 2) {
-        renderGlobalWallpaper(MONITOR, NOW);
+        renderGlobalWallpaper(g_pHyprRenderer->context(), MONITOR, NOW);
     } else
         g_pHyprRenderer->draw(g_pHyprRenderer->context(), CClearPassElement::SClearData{CHyprColor{0.F, 0.F, 0.F, 1.F}}, {});
 
@@ -5472,7 +5504,7 @@ void CScrollOverview::render() {
     if (NEEDS_PRECOMPUTED_BLUR && overviewBlurDirty)
         Render::IHyprRenderer::currentPass(g_pHyprRenderer->context()).add(makeUnique<CPreBlurElement>());
 
-    OverviewRender::flushPass(MONITOR);
+    OverviewRender::flushPass(g_pHyprRenderer->context(), MONITOR);
 
     if (NEEDS_PRECOMPUTED_BLUR)
         overviewBlurDirty = false;
