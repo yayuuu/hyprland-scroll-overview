@@ -4,13 +4,12 @@
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/event/EventBus.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -18,6 +17,7 @@
 #include <hyprland/src/managers/input/trackpad/GestureTypes.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 #include <hyprland/src/managers/input/trackpad/TrackpadGestures.hpp>
+#include <hyprland/src/keybinds/Resolver.hpp>
 
 #include <hyprutils/string/ConstVarList.hpp>
 using namespace Hyprutils::String;
@@ -39,7 +39,7 @@ static CFunctionHook* g_pScrollSendFrameEventsHook = nullptr;
 static CFunctionHook* g_pScrollSurfaceFrameHook    = nullptr;
 static CFunctionHook* g_pScrollMoveMouseHook       = nullptr;
 static CFunctionHook* g_pScrollChangeWorkspaceHook = nullptr;
-typedef void (*origRenderWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&, const CBox&);
+typedef void (*origRenderWorkspace)(void*, Render::CRenderContext&, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&, const CBox&);
 typedef void (*origAddDamageA)(void*, const CBox&);
 typedef void (*origAddDamageB)(void*, const pixman_region32_t*);
 typedef void (*origDamageSurface)(void*, SP<CWLSurfaceResource>, double, double, double);
@@ -155,10 +155,10 @@ static void hkScheduleFrame(void* thisptr, Aquamarine::IOutput::scheduleFrameRea
 }
 
 //
-static void hkRenderWorkspace(void* thisptr, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& now, const CBox& geometry) {
+static void hkRenderWorkspace(void* thisptr, Render::CRenderContext& ctx, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& now, const CBox& geometry) {
     const auto OVERVIEW = scrollOverviewForMonitor(pMonitor);
     if (!OVERVIEW || renderingOverview)
-        rc<origRenderWorkspace>(g_pScrollRenderWorkspaceHook->m_original)(thisptr, pMonitor, pWorkspace, now, geometry);
+        rc<origRenderWorkspace>(g_pScrollRenderWorkspaceHook->m_original)(thisptr, ctx, pMonitor, pWorkspace, now, geometry);
     else {
         const bool PREVRENDERINGOVERVIEW = renderingOverview;
         const auto PREVRENDERINGMONITOR  = renderingOverviewMonitor;
@@ -267,8 +267,11 @@ static std::vector<PHLMONITOR> overviewTargetMonitors(const std::string& target)
 }
 
 static SP<IOverview> dispatcherOverview() {
-    const auto CURRENTKEYBIND = g_pKeybindManager ? g_pKeybindManager->m_currentKeybind : SP<SKeybind>{};
-    if (CURRENTKEYBIND && CURRENTKEYBIND->key.starts_with("mouse"))
+    const auto& ACTIONSTATE       = Config::Actions::state();
+    const bool  FROMMOUSEAXISBIND = consumeOverviewMouseAxisBind(ACTIONSTATE ? ACTIONSTATE->m_timeLastMs : 0);
+    const bool  FROMMOUSEBIND     = ACTIONSTATE && ACTIONSTATE->m_bindInvocationDepth > 0 &&
+        ((ACTIONSTATE->m_lastCode == 0 && ACTIONSTATE->m_lastMouseCode != 0) || FROMMOUSEAXISBIND);
+    if (FROMMOUSEBIND)
         return g_pInputManager ? scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()) : SP<IOverview>{};
 
     return activeScrollOverview();
@@ -523,8 +526,8 @@ static void* findFnOrThrow(const std::string& name, std::initializer_list<std::s
 
 // shared core: register / unregister the overview trackpad gesture. used by both the hyprlang
 // keyword and the Lua `scrolloverview.gesture` function so both configure the same gesture system.
-static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount, eTrackpadGestureDirection direction, const std::string& action, uint32_t modMask,
-                                                             float deltaScale, bool disableInhibit) {
+static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount, eTrackpadGestureDirection direction, const std::string& action,
+                                                             Input::ModifierMask modMask, float deltaScale, bool disableInhibit) {
     if (fingerCount <= 1 || fingerCount >= 10)
         return std::unexpected(std::format("Invalid value {} for finger count", fingerCount));
 
@@ -551,9 +554,9 @@ static SDispatchResult onRegisterOverviewGesture(size_t fingerCount, const std::
     if (direction == TRACKPAD_GESTURE_DIR_NONE)
         return {.success = false, .error = std::format("Invalid direction: {}", directionStr)};
 
-    uint32_t modMask = 0;
-    if (!mods.empty() && g_pKeybindManager)
-        modMask = g_pKeybindManager->stringToModMask(mods);
+    Input::ModifierMask modMask = Input::HL_MODIFIER_NONE;
+    if (!mods.empty())
+        modMask = Keybinds::modMaskFromString(mods);
 
     const auto res = applyOverviewGesture(fingerCount, direction, action, modMask, std::clamp(deltaScale, 0.1F, 10.F), disableInhibit);
     if (!res)
@@ -587,14 +590,14 @@ static Hyprlang::CParseResult overviewGestureKeyword(const char* LHS, const char
     }
 
     int      startDataIdx   = 2;
-    uint32_t modMask        = 0;
+    Input::ModifierMask modMask        = Input::HL_MODIFIER_NONE;
     float    deltaScale     = 1.F;
     bool     disableInhibit = false;
 
     while (true) {
 
         if (data[startDataIdx].starts_with("mod:")) {
-            modMask = g_pKeybindManager->stringToModMask(std::string{data[startDataIdx].substr(4)});
+            modMask = Keybinds::modMaskFromString(std::string{data[startDataIdx].substr(4)});
             startDataIdx++;
             continue;
         } else if (data[startDataIdx].starts_with("scale:")) {
@@ -636,7 +639,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     g_pScrollRenderWorkspaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("renderWorkspace", {"CHyprRenderer::renderWorkspace(", "IHyprRenderer::renderWorkspace("}),
+        // Hook the monitor/geometry overload, not the workspace/scene-mode overload.
+        findFnOrThrow("renderWorkspace", {"Render::IHyprRenderer::renderWorkspace(Render::CRenderContext&, Hyprutils::Memory::CSharedPointer<Monitor::CMonitor>,"}),
         rc<void*>(hkRenderWorkspace));
 
     g_pScrollScheduleFrameHook = HyprlandAPI::createFunctionHook(
@@ -673,7 +677,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // rendering hooks inside hkChangeWorkspace, which still needs its original function.
     g_pScrollChangeWorkspaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("changeWorkspace", {"Config::Actions::changeWorkspace(Hyprutils::Memory::CSharedPointer<CWorkspace>"}),
+        findFnOrThrow("changeWorkspace", {"Config::Actions::changeWorkspace(Hyprutils::Memory::CSharedPointer<Workspace::CHLWorkspace>)"}),
         rc<void*>(hkChangeWorkspace));
     if (!g_pScrollChangeWorkspaceHook || !g_pScrollChangeWorkspaceHook->hook()) {
         failNotif("Failed enabling workspace change hook");
@@ -709,7 +713,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    g_pHyprRenderer->m_renderPass.removeAllOfType("CScrollOverviewPassElement");
+    Render::IHyprRenderer::currentPass(g_pHyprRenderer->context()).removeAllOfType("CScrollOverviewPassElement");
 
     g_unloading = true;
     g_nativeDragMouseMoveHook.reset();
