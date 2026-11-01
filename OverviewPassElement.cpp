@@ -92,21 +92,21 @@ CScrollOverviewPassElement::CScrollOverviewPassElement() {
     ;
 }
 
-std::vector<UP<IPassElement>> CScrollOverviewPassElement::draw() {
+std::vector<UP<IPassElement>> CScrollOverviewPassElement::draw(Render::CRenderContext& ctx) {
     if (const auto overview = activeScrollOverview())
         overview->fullRender();
     return {};
 }
 
-bool CScrollOverviewPassElement::needsLiveBlur() {
+bool CScrollOverviewPassElement::needsLiveBlur(Render::CRenderContext& ctx) {
     return false;
 }
 
-bool CScrollOverviewPassElement::needsPrecomputeBlur() {
+bool CScrollOverviewPassElement::needsPrecomputeBlur(Render::CRenderContext& ctx) {
     return false;
 }
 
-std::optional<CBox> CScrollOverviewPassElement::boundingBox() {
+std::optional<CBox> CScrollOverviewPassElement::boundingBox(Render::CRenderContext& ctx) {
     const auto overview = activeScrollOverview();
     if (!overview || !overview->pMonitor)
         return std::nullopt;
@@ -114,7 +114,7 @@ std::optional<CBox> CScrollOverviewPassElement::boundingBox() {
     return CBox{{}, overview->pMonitor->m_size};
 }
 
-CRegion CScrollOverviewPassElement::opaqueRegion() {
+CRegion CScrollOverviewPassElement::opaqueRegion(Render::CRenderContext& ctx) {
     const auto overview = activeScrollOverview();
     if (!overview || !overview->pMonitor)
         return CRegion{};
@@ -126,27 +126,22 @@ COverviewShadowPassElement::COverviewShadowPassElement(const SData& data_) : dat
     ;
 }
 
-std::vector<UP<IPassElement>> COverviewShadowPassElement::draw() {
+std::vector<UP<IPassElement>> COverviewShadowPassElement::draw(Render::CRenderContext& ctx) {
     const auto MONITOR = data.monitor.lock();
     const bool HASVISIBLECOLOR = std::ranges::any_of(data.color.m_colors, [](const CHyprColor& color) { return color.a > 0.F; });
     if (!MONITOR || data.fullBox.width < 1 || data.fullBox.height < 1 || data.range <= 0 || !HASVISIBLECOLOR || data.alpha <= 0.F)
         return {};
 
-    CRegion shadowDamage = g_pHyprRenderer->m_renderData.damage.copy().intersect(data.fullBox);
+    CRegion shadowDamage = ctx.m_data.damage.copy().intersect(data.fullBox);
     if (data.ignoreWindow)
         shadowDamage.subtract(roundedRectRegion(data.cutoutBox, data.rounding + 1, data.roundingPower));
 
     if (shadowDamage.empty())
         return {};
 
-    const auto SAVEDDAMAGE       = g_pHyprRenderer->m_renderData.damage;
-    const auto SAVEDCURRENTWINDOW = g_pHyprRenderer->m_renderData.currentWindow;
-    g_pHyprRenderer->m_renderData.damage = shadowDamage;
-    g_pHyprRenderer->m_renderData.currentWindow.reset();
-    auto restoreRenderData = Hyprutils::Utils::CScopeGuard([SAVEDDAMAGE, SAVEDCURRENTWINDOW] {
-        g_pHyprRenderer->m_renderData.damage        = SAVEDDAMAGE;
-        g_pHyprRenderer->m_renderData.currentWindow = SAVEDCURRENTWINDOW;
-    });
+    auto savedDrawState = ctx.saveDrawState();
+    ctx.m_data.damage   = shadowDamage;
+    ctx.m_data.currentWindow.reset();
 
     std::optional<int> previousRenderPower;
     if (data.renderPower > 0) {
@@ -161,20 +156,21 @@ std::vector<UP<IPassElement>> COverviewShadowPassElement::draw() {
         ScrollOverview::Config::setValue("decoration:shadow:render_power", *previousRenderPower);
     });
 
-    Render::GL::g_pHyprOpenGL->renderRoundedShadow(data.fullBox, data.rounding, data.roundingPower, data.range, data.color, std::clamp(data.alpha, 0.F, 1.F));
+    // Overview shadows use precomputed boxes and no current window, so no workspace presentation is needed.
+    Render::GL::g_pHyprOpenGL->renderRoundedShadow(ctx, data.fullBox, data.rounding, data.roundingPower, data.range, data.color, std::clamp(data.alpha, 0.F, 1.F), {});
 
     return {};
 }
 
-bool COverviewShadowPassElement::needsLiveBlur() {
+bool COverviewShadowPassElement::needsLiveBlur(Render::CRenderContext& ctx) {
     return false;
 }
 
-bool COverviewShadowPassElement::needsPrecomputeBlur() {
+bool COverviewShadowPassElement::needsPrecomputeBlur(Render::CRenderContext& ctx) {
     return false;
 }
 
-std::optional<CBox> COverviewShadowPassElement::boundingBox() {
+std::optional<CBox> COverviewShadowPassElement::boundingBox(Render::CRenderContext& ctx) {
     const auto MONITOR = data.monitor.lock();
     if (!MONITOR)
         return std::nullopt;
@@ -182,6 +178,6 @@ std::optional<CBox> COverviewShadowPassElement::boundingBox() {
     return data.fullBox.copy().scale(1.F / MONITOR->m_scale).round();
 }
 
-CRegion COverviewShadowPassElement::opaqueRegion() {
+CRegion COverviewShadowPassElement::opaqueRegion(Render::CRenderContext& ctx) {
     return {};
 }

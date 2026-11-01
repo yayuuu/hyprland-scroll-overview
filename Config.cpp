@@ -9,7 +9,7 @@
 #include <hyprland/src/config/values/types/IntValue.hpp>
 #include <hyprland/src/config/values/types/StringValue.hpp>
 #include <hyprland/src/config/values/types/GradientValue.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 
 #include <hyprland/src/config/lua/types/LuaConfigUtils.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -147,7 +147,8 @@ int dispatcherFactoryLua(lua_State* L, std::string_view name) {
     if (!DISPATCHER->isArgValid(arg))
         return luaL_error(L, "%s: invalid argument '%s', %s", DISPATCHER->name.data(), arg, DISPATCHER->invalidArgError.data());
 
-    if (g_pKeybindManager && g_pKeybindManager->m_currentKeybind && g_pKeybindManager->m_currentKeybind->handler == "__lua") {
+    const auto& ACTIONSTATE = Config::Actions::state();
+    if (ACTIONSTATE && ACTIONSTATE->m_bindInvocationDepth > 0) {
         return runDispatcherNow(L, *DISPATCHER, arg);
     }
 
