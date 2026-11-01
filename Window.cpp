@@ -201,7 +201,7 @@ struct SOverviewPseudoFocusState {
             window->m_ruleApplicator->inactiveBorderColor().valueOr(BORDERCOLOR);
 
         const auto SHADOWACTIVE   = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color");
-        const auto SHADOWINACTIVE = Config::mgr()->getConfigValue("decoration:shadow:color_inactive").setByUser ?
+        const auto SHADOWINACTIVE = ScrollOverview::Config::valueRef<Config::IComplexConfigValue>("decoration:shadow:color_inactive").setByUser() ?
             ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:shadow:color_inactive") : SHADOWACTIVE;
         const auto GLOWACTIVE     = ScrollOverview::Config::getValue<Config::CGradientValueData>("decoration:glow:color");
         const auto GLOWINACTIVE   = Config::mgr()->getConfigValue("decoration:glow:color_inactive").setByUser ?
