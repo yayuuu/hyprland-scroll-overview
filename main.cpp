@@ -28,6 +28,7 @@ using namespace Hyprutils::String;
 #include "scrollOverview.hpp"
 #include "OverviewGesture.hpp"
 #include "OverviewOpen.hpp"
+#include "Window.hpp"
 
 // Methods
 static CFunctionHook* g_pScrollRenderWorkspaceHook = nullptr;
@@ -490,7 +491,7 @@ static void reconcileNativeDragHook() {
 }
 
 // Helper function to find a function by name and ensure it contains one of the requested substrings in its demangled name (to disambiguate overloads).
-static void* findFnOrThrow(const std::string& name, std::initializer_list<std::string_view> demangledNeedles) {
+void* findFnOrThrow(const std::string& name, std::initializer_list<std::string_view> demangledNeedles) {
     auto fns = HyprlandAPI::findFunctionsByName(SCROLLOVERVIEW_HANDLE, name);
     if (fns.empty()) {
         failNotif(std::format("no fns for hook {}", name));
@@ -637,6 +638,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[he] Version mismatch");
     }
 
+    OverviewWindow::initDecorationRenderer();
+
     g_pScrollRenderWorkspaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
         // Hook the monitor/geometry overload, not the workspace/scene-mode overload.
@@ -722,6 +725,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         g_pScrollChangeWorkspaceHook->unhook();
     clearScrollOverviews();
     disableScrollOverviewHooks();
+    OverviewWindow::cleanupDecorationRenderer();
 
     if (g_pTrackpadGestures)
         g_pTrackpadGestures->clearGestures();
