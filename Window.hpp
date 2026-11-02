@@ -5,6 +5,9 @@
 
 namespace OverviewWindow {
 
+void initDecorationRenderer();
+void cleanupDecorationRenderer();
+
 bool shouldBlurBackground(const PHLWINDOW& window);
 bool shouldUsePrecomputedBlur(const PHLWINDOW& window, PHLMONITOR monitor = nullptr, const CBox* workspaceBox = nullptr, const CBox* windowBox = nullptr, bool dragged = false);
 bool shouldUseBlurFramebuffer(const PHLWINDOW& window, PHLMONITOR monitor = nullptr, const CBox* workspaceBox = nullptr, const CBox* windowBox = nullptr);

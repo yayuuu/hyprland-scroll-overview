@@ -724,9 +724,14 @@ static SOverviewShadowConfig getOverviewShadowConfig(PHLMONITOR monitor) {
     };
 }
 
-static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& workspaceBox, float overviewScale, bool cutoutCenter, float alpha = 1.F) {
+static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& workspaceBox, float overviewScale, float alpha = 1.F) {
     if (!monitor)
         return;
+
+    // Fade the card's shadow continuously between the desktop and overview,
+    // including when a gesture reverses before reaching either endpoint.
+    const auto progress = std::clamp((1.F - overviewScale) / (1.F - ScrollOverview::Config::getScale(monitor)), 0.F, 1.F);
+    alpha *= progress * progress * (3.F - 2.F * progress);
 
     const auto SHADOW = getOverviewShadowConfig(monitor);
     const bool HASVISIBLECOLOR = std::ranges::any_of(SHADOW.color.m_colors, [](const CHyprColor& color) { return color.a > 0.F; });
@@ -751,7 +756,7 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
         .renderPower   = SHADOW.renderPower,
         .color         = SHADOW.color,
         .alpha         = alpha,
-        .ignoreWindow  = cutoutCenter,
+        .ignoreWindow  = true, // Only the workspace cuts out its own shadow.
     }));
 }
 
@@ -4302,7 +4307,7 @@ void CScrollOverview::renderWorkspaceBackground(PHLMONITOR monitor, size_t works
         workspace->m_forceRendering = WASFORCERENDERING;
     });
 
-    renderOverviewWorkspaceShadow(monitor, WORKSPACEBOX, renderScale, wallpaperMode == 0, WORKSPACEALPHA);
+    renderOverviewWorkspaceShadow(monitor, WORKSPACEBOX, renderScale, WORKSPACEALPHA);
 
     if (ScrollOverview::Config::getBlur(pMonitor.lock()) && wallpaperMode != 1 && WORKSPACEALPHA > 0.001F)
         OverviewRender::queueBlur(g_pHyprRenderer->context(), WORKSPACEBOX, 0, 2.F, WORKSPACEALPHA, false);
@@ -5491,7 +5496,7 @@ void CScrollOverview::render() {
         const auto GHOSTBOX     = getOverviewWorkspaceBox(MONITOR, SCALE, viewOffset->value(), GHOSTOFFSET, layout);
 
         if (GHOSTALPHA > 0.001F && overviewBoxIntersectsMonitor(GHOSTBOX, MONITOR)) {
-            renderOverviewWorkspaceShadow(MONITOR, GHOSTBOX, SCALE, WALLPAPERMODE == 0, GHOSTALPHA);
+            renderOverviewWorkspaceShadow(MONITOR, GHOSTBOX, SCALE, GHOSTALPHA);
 
             if (WALLPAPERMODE != 0)
                 renderWallpaperLayers(MONITOR, GHOSTBOX, SCALE, NOW, GHOSTALPHA);
