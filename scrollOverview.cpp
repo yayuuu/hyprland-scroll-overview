@@ -756,7 +756,7 @@ static void renderOverviewWorkspaceShadow(PHLMONITOR monitor, const CBox& worksp
         .renderPower   = SHADOW.renderPower,
         .color         = SHADOW.color,
         .alpha         = alpha,
-        .ignoreWindow  = true, // Only the workspace cuts out its own shadow.
+        .ignoreWindow  = false,
     }));
 }
 
