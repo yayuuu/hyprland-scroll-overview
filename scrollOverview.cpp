@@ -3819,6 +3819,33 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
 
     if (!shouldMoveWorkspace && (!closeOnWindow || closeOnWindow->m_workspace != WORKSPACEIMAGE->pWorkspace || !shouldShowOverviewWindow(closeOnWindow.lock()) || closeOnWindow->isFloating())) {
         syncSelectionToViewport();
+
+        // syncSelectionToViewport() can keep (or pick) a floating window, e.g. a small launcher near the
+        // workspace center. Floating windows are never navigation candidates, so starting from one turned
+        // every left/right press into a workspace move. Start from the nearest tiled window instead.
+        if (closeOnWindow && closeOnWindow->isFloating() && closeOnWindow->m_workspace == WORKSPACEIMAGE->pWorkspace) {
+            const auto ORIGIN = closeOnWindow->middle();
+            PHLWINDOW  nearestTiled;
+            double     nearestDistance = std::numeric_limits<double>::max();
+
+            for (const auto& windowRef : WORKSPACEIMAGE->windows) {
+                const auto WINDOW = getOverviewWindowToShow(windowRef.lock());
+                if (!shouldShowOverviewWindow(WINDOW) || WINDOW->isFloating())
+                    continue;
+                if (WINDOW->m_workspace != WORKSPACEIMAGE->pWorkspace || WINDOW->m_monitor != pMonitor)
+                    continue;
+
+                const double DISTANCE = WINDOW->middle().distanceSq(ORIGIN);
+                if (DISTANCE < nearestDistance) {
+                    nearestTiled    = WINDOW;
+                    nearestDistance = DISTANCE;
+                }
+            }
+
+            if (nearestTiled)
+                closeOnWindow = nearestTiled;
+        }
+
         if (!closeOnWindow || closeOnWindow->m_workspace != WORKSPACEIMAGE->pWorkspace || !shouldShowOverviewWindow(closeOnWindow.lock()) || closeOnWindow->isFloating())
             shouldMoveWorkspace = true;
     }
