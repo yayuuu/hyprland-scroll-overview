@@ -3,6 +3,7 @@
 #include <any>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <functional>
 #include <limits>
@@ -1712,15 +1713,128 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     syncSelectionToViewport();
 }
 
-static void renderOverviewLayerLevel(PHLMONITOR monitor, uint32_t layer, const CBox& workspaceBox, float renderScale, const Time::steady_tp& now, float alpha = 1.F) {
+// A layer surface is a wallpaper candidate when it covers the whole monitor and reserves no exclusive zone.
+// Everything else on the BACKGROUND and BOTTOM layers is a widget and is drawn per card.
+// Layer geometry comes from m_geometry (the arrangeLayersForMonitor() result), not logicalBox(). logicalBox()
+// returns nullopt for surfaces with no input region or zero alpha, which would hide a valid wallpaper.
+static bool layerSurfaceCoversMonitor(const PHLLS& ls, PHLMONITOR monitor) {
+    // m_geometry is in global layout coordinates, so compare against the monitor's position, not the origin.
+    const CBox& GEOM = ls->m_geometry;
+    constexpr double EPSILON = 0.5;
+    return std::abs(GEOM.x - monitor->m_position.x) < EPSILON && std::abs(GEOM.y - monitor->m_position.y) < EPSILON && GEOM.w + EPSILON >= monitor->m_size.x &&
+        GEOM.h + EPSILON >= monitor->m_size.y;
+}
+
+static int32_t layerSurfaceExclusiveZone(const PHLLS& ls) {
+    const auto RESOURCE = ls->m_layerSurface.lock();
+    return RESOURCE ? RESOURCE->m_current.exclusive : 0;
+}
+
+static bool wallpaperDebugEnabled() {
+    static const bool ENABLED = [] {
+        const char* value = std::getenv("SCROLLOVERVIEW_DEBUG_WALLPAPER");
+        return value && *value && std::string_view{value} != "0";
+    }();
+    return ENABLED;
+}
+
+static std::unordered_map<std::string, std::string> s_lastWallpaperDebugLog;
+
+static void logWallpaperDetection(PHLMONITOR monitor, const std::vector<PHLLS>& wallpapers) {
+    const auto describe = [](const PHLLS& ls) {
+        const CBox& BOX  = ls->m_geometry;
+        const auto  GEOM = std::format("{:.0f},{:.0f} {:.0f}x{:.0f}", BOX.x, BOX.y, BOX.w, BOX.h);
+        return std::format("'{}' layer={} geom={} exclusive={}", ls->m_namespace, ls->m_layer, GEOM, layerSurfaceExclusiveZone(ls));
+    };
+
+    std::string summary = "wallpapers:";
+    for (const auto& ls : wallpapers)
+        summary += std::format(" [{}]", describe(ls));
+
+    summary += " widgets:";
+    for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM}) {
+        for (const auto& ref : monitor->m_layerSurfaceLayers[LAYER]) {
+            const auto ls = ref.lock();
+            if (!Desktop::View::validMapped(ls) || std::find(wallpapers.begin(), wallpapers.end(), ls) != wallpapers.end())
+                continue;
+            summary += std::format(" [{}]", describe(ls));
+        }
+    }
+
+    auto& last = s_lastWallpaperDebugLog[monitor->m_name];
+    if (last == summary)
+        return;
+
+    last = summary;
+    std::fprintf(stderr, "[scrolloverview] monitor %s %s\n", monitor->m_name.c_str(), summary.c_str());
+}
+
+static std::vector<PHLLS> detectWallpaperSurfaces(PHLMONITOR monitor) {
+    std::vector<PHLLS> wallpapers;
+    if (!monitor)
+        return wallpapers;
+
+    const auto LAYERCFG      = ScrollOverview::Config::getWallpaperLayer(monitor);
+    const bool SCANBACKGROUND = LAYERCFG != ScrollOverview::Config::EWallpaperLayer::BOTTOM;
+    const bool SCANBOTTOM     = LAYERCFG != ScrollOverview::Config::EWallpaperLayer::BACKGROUND;
+
+    for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM}) {
+        if ((LAYER == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND && !SCANBACKGROUND) || (LAYER == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM && !SCANBOTTOM))
+            continue;
+
+        for (const auto& ref : monitor->m_layerSurfaceLayers[LAYER]) {
+            const auto ls = ref.lock();
+            if (!Desktop::View::validMapped(ls) || !layerSurfaceCoversMonitor(ls, monitor) || layerSurfaceExclusiveZone(ls) > 0)
+                continue;
+
+            wallpapers.emplace_back(ls);
+        }
+    }
+
+    if (wallpaperDebugEnabled())
+        logWallpaperDetection(monitor, wallpapers);
+
+    return wallpapers;
+}
+
+static bool isWallpaperSurface(const PHLLS& ls, PHLMONITOR monitor) {
+    const auto WALLPAPERS = detectWallpaperSurfaces(monitor);
+    return std::find(WALLPAPERS.begin(), WALLPAPERS.end(), ls) != WALLPAPERS.end();
+}
+
+// Widgets are every mapped BACKGROUND or BOTTOM surface that is not part of the wallpaper stack.
+static std::vector<PHLLS> collectOverviewWidgets(PHLMONITOR monitor) {
+    std::vector<PHLLS> widgets;
+    if (!monitor)
+        return widgets;
+
+    const auto WALLPAPERS = detectWallpaperSurfaces(monitor);
+    for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM}) {
+        for (const auto& ref : monitor->m_layerSurfaceLayers[LAYER]) {
+            const auto ls = ref.lock();
+            if (!Desktop::View::validMapped(ls) || std::find(WALLPAPERS.begin(), WALLPAPERS.end(), ls) != WALLPAPERS.end())
+                continue;
+
+            widgets.emplace_back(ls);
+        }
+    }
+
+    return widgets;
+}
+
+static void renderOverviewSurfaces(PHLMONITOR monitor, const std::vector<PHLLS>& surfaces, const CBox& workspaceBox, float renderScale, const Time::steady_tp& now,
+                                   float alpha = 1.F) {
     if (!monitor)
         return;
+
+    // Hyprland culls earlier pass elements under an opaque surface using its unscaled opaque region.
+    // A full-monitor surface would hide anything queued before it (the wallpaper or the global pass), so flush first.
+    OverviewRender::flushPass(g_pHyprRenderer->context(), monitor);
 
     bool pushedRenderHints = false;
     const bool MODULATEALPHA = alpha < 0.999F;
 
-    for (auto const& ls : monitor->m_layerSurfaceLayers[layer]) {
-        const auto LAYER = ls.lock();
+    for (auto const& LAYER : surfaces) {
         if (!Desktop::View::validMapped(LAYER))
             continue;
 
@@ -1748,13 +1862,22 @@ static void renderOverviewLayerLevel(PHLMONITOR monitor, uint32_t layer, const C
 
     if (pushedRenderHints)
         Render::IHyprRenderer::currentPass(g_pHyprRenderer->context()).add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = Render::SRenderModifData{}}));
+
+    OverviewRender::flushPass(g_pHyprRenderer->context(), monitor);
 }
 
 void CScrollOverview::renderWallpaperLayers(PHLMONITOR monitor, const CBox& workspaceBox, float renderScale, const Time::steady_tp& now, float alpha) {
     if (!monitor)
         return;
 
-    renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND, workspaceBox, renderScale, now, alpha);
+    renderOverviewSurfaces(monitor, detectWallpaperSurfaces(monitor), workspaceBox, renderScale, now, alpha);
+}
+
+void CScrollOverview::renderWidgetLayers(PHLMONITOR monitor, const CBox& workspaceBox, float renderScale, const Time::steady_tp& now, float alpha) {
+    if (!monitor)
+        return;
+
+    renderOverviewSurfaces(monitor, collectOverviewWidgets(monitor), workspaceBox, renderScale, now, alpha);
 }
 
 void CScrollOverview::renderGlobalWallpaper(Render::CRenderContext& ctx, PHLMONITOR monitor, const Time::steady_tp& now) {
@@ -1763,11 +1886,8 @@ void CScrollOverview::renderGlobalWallpaper(Render::CRenderContext& ctx, PHLMONI
 
     g_pHyprRenderer->renderBackground(ctx, monitor);
 
-    for (auto const& ls : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
-        if (!Desktop::View::validMapped(ls.lock()))
-            continue;
-
-        g_pHyprRenderer->renderLayer(ctx, ls.lock(), monitor, now);
+    for (auto const& ls : detectWallpaperSurfaces(monitor)) {
+        g_pHyprRenderer->renderLayer(ctx, ls, monitor, now);
     }
 }
 
@@ -1775,9 +1895,15 @@ void CScrollOverview::updateBackdropBlurCache(PHLMONITOR monitor, int wallpaperM
     if (!monitor || wallpaperMode == 1 || !ScrollOverview::Config::getBlur(pMonitor.lock()))
         return;
 
-    if (lastBackdropWallpaperMode != wallpaperMode) {
-        backdropBlurDirty         = true;
-        lastBackdropWallpaperMode = wallpaperMode;
+    // The cache holds the wallpaper stack, so it must rebuild when the mode or the detected surfaces (or their layers) change.
+    std::vector<std::pair<const void*, uint32_t>> wallpaperStack;
+    for (const auto& ls : detectWallpaperSurfaces(monitor))
+        wallpaperStack.emplace_back(ls.get(), ls->m_layer);
+
+    if (lastBackdropWallpaperMode != wallpaperMode || lastBackdropWallpaperStack != wallpaperStack) {
+        backdropBlurDirty           = true;
+        lastBackdropWallpaperMode   = wallpaperMode;
+        lastBackdropWallpaperStack  = std::move(wallpaperStack);
     }
 
     auto&      monitorContext = g_pHyprRenderer->context();
@@ -4316,7 +4442,7 @@ void CScrollOverview::renderWorkspaceBackground(PHLMONITOR monitor, size_t works
         renderWallpaperLayers(monitor, WORKSPACEBOX, renderScale, now, WORKSPACEALPHA);
 
     if (WORKSPACEALPHA >= 0.999F)
-        renderOverviewLayerLevel(monitor, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM, WORKSPACEBOX, renderScale, now);
+        renderWidgetLayers(monitor, WORKSPACEBOX, renderScale, now);
 }
 
 void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceIdx, size_t activeIdx, float workspacePitch, float renderScale, int wallpaperMode, const Time::steady_tp& now) {
@@ -5044,7 +5170,7 @@ bool CScrollOverview::shouldHandleSurfaceDamage(SP<CWLSurfaceResource> surface) 
             return false;
 
         markBlurDirty();
-        if (layerOwner->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+        if (isWallpaperSurface(layerOwner, MONITOR))
             markBackdropBlurDirty();
         return true;
     }
@@ -5501,7 +5627,7 @@ void CScrollOverview::render() {
             if (WALLPAPERMODE != 0)
                 renderWallpaperLayers(MONITOR, GHOSTBOX, SCALE, NOW, GHOSTALPHA);
 
-            renderOverviewLayerLevel(MONITOR, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM, GHOSTBOX, SCALE, NOW);
+            renderWidgetLayers(MONITOR, GHOSTBOX, SCALE, NOW);
         }
     }
 
