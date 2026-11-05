@@ -5,6 +5,7 @@
   - [Dispatchers](Dispatchers.md)
   - [Keybind submap](Keybind-submap.md)
 - [Advanced configuration](Advanced-configuration.md)
+  - [Wallpaper layers](Wallpaper-layers.md)
   - [Per-monitor configuration](Per-monitor-configuration.md)
   - [Dynamic workspaces](Dynamic-workspaces.md)
   - [ALT + Tab overview](ALT-Tab-overview.md)
