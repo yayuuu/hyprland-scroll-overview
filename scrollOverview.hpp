@@ -249,6 +249,7 @@ class CScrollOverview : public IOverview {
     bool                             usesSubmapKeybinds = false;
     bool                             submapActive = false;
     uint32_t                         submapMouseClickButton = 0;
+    std::string                      submapName;
     std::string                      previousSubmapName;
     int                              previousNoWarps = 0;
     int                              previousWarpOnChangeWorkspace = 0;

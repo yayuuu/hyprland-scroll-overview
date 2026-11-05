@@ -107,6 +107,7 @@ int           getGestureDistance(PHLMONITOR monitor);
 float         getScale(PHLMONITOR monitor);
 int           getWorkspaceGap(PHLMONITOR monitor);
 ELayout       getLayout(PHLMONITOR monitor);
+std::string   getSubmapName();
 bool          getCrossMonitorDrag(PHLMONITOR monitor);
 int           getScrollEventDelay(PHLMONITOR monitor);
 bool          getLeftHanded(PHLMONITOR monitor);

@@ -76,7 +76,6 @@
 #include "Window.hpp"
 
 static PHLWINDOW getOverviewFullscreenVisibilityWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& fallback = {});
-static constexpr const char* OVERVIEW_SUBMAP = "scrolloverview";
 static constexpr auto        POST_DROP_PSEUDO_FOCUS_DURATION = std::chrono::milliseconds(100);
 static CScrollOverview*             g_pointerGrabOverview = nullptr;
 static bool                         g_finishingAdoptedNativeDrag    = false;
@@ -197,12 +196,12 @@ static xkb_keysym_t getOverviewKeysym(const IKeyboard::SKeyEvent& event) {
     return xkb_state_key_get_one_sym(STATE, event.keycode + 8);
 }
 
-static bool hasOverviewSubmap() {
-    return Keybinds::mgr() && Keybinds::mgr()->registry().hasSubmap(OVERVIEW_SUBMAP);
+static bool hasOverviewSubmap(const std::string& name) {
+    return Keybinds::mgr() && Keybinds::mgr()->registry().hasSubmap(name);
 }
 
-static bool isOverviewSubmapActive() {
-    return Keybinds::mgr() && Keybinds::mgr()->currentSubmap() == OVERVIEW_SUBMAP;
+static bool isOverviewSubmapActive(const std::string& name) {
+    return Keybinds::mgr() && Keybinds::mgr()->currentSubmap() == name;
 }
 
 static bool hasApplicableScrollKeybind(const IPointer::SAxisEvent& event) {
@@ -1063,7 +1062,8 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
     if (layout == ScrollOverview::Config::ELayout::AUTO)
         layout = PMONITOR && PMONITOR->logicalBox().height > PMONITOR->logicalBox().width ? ScrollOverview::Config::ELayout::HORIZONTAL : ScrollOverview::Config::ELayout::VERTICAL;
     sharedStateOwner             = scrollOverviews().empty();
-    usesSubmapKeybinds           = hasOverviewSubmap();
+    submapName                   = ScrollOverview::Config::getSubmapName();
+    usesSubmapKeybinds           = hasOverviewSubmap(submapName);
 
     applyWorkspaceAnimationOverrides();
     if (sharedStateOwner)
@@ -1285,7 +1285,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         }
 
         if (FORWARDEDTOPLAYERRELEASE ||
-            (event.state == WL_POINTER_BUTTON_STATE_PRESSED && POINTERONTOPLAYER && usesSubmapKeybinds && isOverviewSubmapActive())) {
+            (event.state == WL_POINTER_BUTTON_STATE_PRESSED && POINTERONTOPLAYER && usesSubmapKeybinds && isOverviewSubmapActive(submapName))) {
             submapMouseClickPending = false;
             submapMouseClickButton  = 0;
 
@@ -1330,7 +1330,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
             submapMouseClickButton  = 0;
         };
         const auto     beginSubmapMouseClickPending = [&](uint32_t button) {
-            if (!usesSubmapKeybinds || !isOverviewSubmapActive())
+            if (!usesSubmapKeybinds || !isOverviewSubmapActive(submapName))
                 return false;
 
             submapMouseClickPending = true;
@@ -1345,7 +1345,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
                 return false;
             }
 
-            return !usesSubmapKeybinds || !isOverviewSubmapActive();
+            return !usesSubmapKeybinds || !isOverviewSubmapActive(submapName);
         };
         const auto     performClickAction = [&](uint32_t button) {
             if (!shouldRunDefaultClickAction(button))
@@ -1525,7 +1525,7 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
         if (info.cancelled || closing || scrollOverviewAt(g_pInputManager->getMouseCoordsInternal()).get() != this)
             return;
 
-        if (usesSubmapKeybinds && isOverviewSubmapActive() && hasApplicableScrollKeybind(e)) {
+        if (usesSubmapKeybinds && isOverviewSubmapActive(submapName) && hasApplicableScrollKeybind(e)) {
             if (scrollKeybindIsThrottled()) {
                 g_pendingMouseAxisBindTimeMs.reset();
                 info.cancelled = true;
@@ -4395,6 +4395,7 @@ void CScrollOverview::transferSharedStateOwnership() {
 
     successor->usesSubmapKeybinds   = usesSubmapKeybinds;
     successor->submapActive         = submapActive;
+    successor->submapName           = submapName;
     successor->previousSubmapName   = std::move(previousSubmapName);
     if (successor->usesSubmapKeybinds)
         successor->keyboardKeyHook.reset();
@@ -5472,7 +5473,8 @@ void CScrollOverview::reopen() {
         }
     }
 
-    usesSubmapKeybinds = hasOverviewSubmap();
+    submapName         = ScrollOverview::Config::getSubmapName();
+    usesSubmapKeybinds = hasOverviewSubmap(submapName);
     if (usesSubmapKeybinds)
         keyboardKeyHook.reset();
     activateSubmapIfConfigured();
@@ -5746,7 +5748,7 @@ void CScrollOverview::activateSubmapIfConfigured() {
 
     previousSubmapName = Keybinds::mgr()->currentSubmap();
 
-    const auto RESULT = Config::Actions::setSubmap(OVERVIEW_SUBMAP);
+    const auto RESULT = Config::Actions::setSubmap(submapName);
     if (!RESULT) {
         usesSubmapKeybinds = false;
         return;
@@ -5760,7 +5762,7 @@ void CScrollOverview::restoreSubmapIfActive() {
         return;
 
     const auto CURRENT = Keybinds::mgr()->currentSubmap();
-    if (CURRENT == OVERVIEW_SUBMAP) {
+    if (CURRENT == submapName) {
         (void)Config::Actions::setSubmap(previousSubmapName.empty() ? "reset" : previousSubmapName);
     }
 
@@ -5768,7 +5770,7 @@ void CScrollOverview::restoreSubmapIfActive() {
 }
 
 bool CScrollOverview::dispatchSubmapMouseClick(uint32_t button) {
-    if (!usesSubmapKeybinds || !isOverviewSubmapActive() || !Keybinds::mgr() || !g_pInputManager)
+    if (!usesSubmapKeybinds || !isOverviewSubmapActive(submapName) || !Keybinds::mgr() || !g_pInputManager)
         return false;
 
     const auto KEYNAME = "mouse:" + std::to_string(button);
@@ -5776,7 +5778,7 @@ bool CScrollOverview::dispatchSubmapMouseClick(uint32_t button) {
     const auto BINDS   = Keybinds::mgr()->registry().binds();
 
     const auto KEYBIND = std::ranges::find_if(BINDS, [&](const auto& keybind) {
-        return keybind && keybind->enabled() && keybind->metadata().submap == OVERVIEW_SUBMAP &&
+        return keybind && keybind->enabled() && keybind->metadata().submap == submapName &&
             std::ranges::contains(keybind->keyNames(), KEYNAME) &&
             (keybind->modifierMask() == MODS || keybind->hasFlag(Keybinds::BIND_FLAG_IGNORE_MODS));
     });
