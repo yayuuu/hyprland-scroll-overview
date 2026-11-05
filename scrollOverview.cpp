@@ -378,11 +378,15 @@ static CBox getOverviewGlobalBox(CBox globalBox, PHLMONITOR monitor, float scale
 }
 
 static CBox getOverviewWindowBox(const PHLWINDOW& window, PHLMONITOR monitor, float scale, const Vector2D& viewOffset, float offset, ScrollOverview::Config::ELayout layout,
-                                 bool round = true) {
+                                 bool round = true, bool includeDecorations = true) {
     if (!window)
         return {};
 
-    return getOverviewGlobalBox(window->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT), monitor, scale, viewOffset, offset, layout, round);
+    auto box = window->geometricBox(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+    if (includeDecorations && g_pDecorationPositioner && window->m_ruleApplicator->decorate().valueOrDefault())
+        box.addExtents(g_pDecorationPositioner->getWindowDecorationExtents(window, true));
+
+    return getOverviewGlobalBox(box, monitor, scale, viewOffset, offset, layout, round);
 }
 
 static CBox getOverviewDragWindowBox(const PHLWINDOW& window, PHLMONITOR monitor, float scale, const Vector2D& viewOffset, float offset, ScrollOverview::Config::ELayout layout,
@@ -394,7 +398,7 @@ static CBox getOverviewDragWindowBox(const PHLWINDOW& window, PHLMONITOR monitor
     if (window->grouping().group() && TARGET)
         return getOverviewGlobalBox(TARGET->position(), monitor, scale, viewOffset, offset, layout, round);
 
-    return getOverviewWindowBox(window, monitor, scale, viewOffset, offset, layout, round);
+    return getOverviewWindowBox(window, monitor, scale, viewOffset, offset, layout, round, false);
 }
 
 static CBox expandOverviewWindowHitbox(CBox box, float scale, float monitorScale) {
@@ -453,22 +457,24 @@ static CBox getWorkspaceGlobalBox(PHLWORKSPACE workspace, PHLMONITOR fallbackMon
     return {MONITOR->m_position, MONITOR->m_size};
 }
 
-static CBox centerBoxInWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor) {
+static CBox centerBoxInWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor, const SBoxExtents& extents = {}) {
     const auto WORKSPACEBOX = getWorkspaceGlobalBox(workspace, fallbackMonitor);
     if (WORKSPACEBOX.width <= 0 || WORKSPACEBOX.height <= 0)
         return box;
 
+    box.addExtents(extents);
     box.x = WORKSPACEBOX.x + std::max(0.F, sc<float>(WORKSPACEBOX.width - box.width)) / 2.F;
     box.y = WORKSPACEBOX.y + std::max(0.F, sc<float>(WORKSPACEBOX.height - box.height)) / 2.F;
 
-    return box;
+    return box.addExtents(extents * -1.0);
 }
 
-static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor, float margin = 0.F) {
+static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fallbackMonitor, float margin = 0.F, const SBoxExtents& extents = {}) {
     const auto WORKSPACEBOX = getWorkspaceGlobalBox(workspace, fallbackMonitor);
     if (WORKSPACEBOX.width <= 0 || WORKSPACEBOX.height <= 0)
         return box;
 
+    box.addExtents(extents);
     const float CLAMPMARGIN = std::max(0.F, margin);
     const float MINX        = WORKSPACEBOX.x + CLAMPMARGIN;
     const float MINY        = WORKSPACEBOX.y + CLAMPMARGIN;
@@ -478,7 +484,7 @@ static CBox clampBoxToWorkspace(CBox box, PHLWORKSPACE workspace, PHLMONITOR fal
     box.x = std::clamp(sc<float>(box.x), MINX, std::max(MINX, MAXX));
     box.y = std::clamp(sc<float>(box.y), MINY, std::max(MINY, MAXY));
 
-    return box;
+    return box.addExtents(extents * -1.0);
 }
 
 static CBox resizedOverviewBoxFromCorner(const CBox& originalBox, const Vector2D& delta, Layout::eRectCorner corner, const Vector2D& minSizePx,
@@ -2785,7 +2791,8 @@ CBox CScrollOverview::draggedWindowBoxFor(PHLWINDOW window, size_t workspaceIdx,
     const auto WORKSPACEOFFSET = workspaceOverviewOffset(workspaceIdx, activeWorkspaceIndex(), getWorkspaceRenderedPitch(MONITOR, scale->value(), layout));
     auto       box             = getOverviewDragWindowBox(window, MONITOR, scale->value(), viewOffset->value(), WORKSPACEOFFSET, layout);
     box.x = pointLocal.x - box.width * std::clamp(grabRatio.x, 0.0, 1.0);
-    box.y = pointLocal.y - box.height * std::clamp(grabRatio.y, 0.0, 1.0);
+    // A grab on the title bar has a negative offset from the window's content.
+    box.y = pointLocal.y - box.height * std::min(grabRatio.y, 1.0);
     return box;
 }
 
@@ -2807,7 +2814,7 @@ CBox CScrollOverview::draggedWindowGlobalBox() const {
 
     return {
         CURSOR.x - GLOBALSIZE.x * std::clamp(dragGrabRatio.x, 0.0, 1.0),
-        CURSOR.y - GLOBALSIZE.y * std::clamp(dragGrabRatio.y, 0.0, 1.0),
+        CURSOR.y - GLOBALSIZE.y * std::min(dragGrabRatio.y, 1.0),
         GLOBALSIZE.x,
         GLOBALSIZE.y,
     };
@@ -3022,7 +3029,7 @@ void CScrollOverview::beginWindowResize() {
     }
 
     const auto WORKSPACEOFFSET = workspaceOverviewOffset(resizeWorkspaceIdx, activeWorkspaceIndex(), getWorkspaceRenderedPitch(MONITOR, scale->value(), layout));
-    resizeOriginalBox   = getOverviewWindowBox(WINDOW, MONITOR, scale->value(), viewOffset->value(), WORKSPACEOFFSET, layout);
+    resizeOriginalBox   = getOverviewWindowBox(WINDOW, MONITOR, scale->value(), viewOffset->value(), WORKSPACEOFFSET, layout, true, false);
     resizeActiveWindow  = WINDOW;
     resizeLastMouseLocal = lastMousePosLocal;
 
@@ -3447,6 +3454,9 @@ void CScrollOverview::endWindowDrag() {
     if (!WINDOW || !TARGET)
         return;
 
+    const auto DECORATIONEXTENTS = g_pDecorationPositioner && WINDOW->m_ruleApplicator->decorate().valueOrDefault() ?
+        g_pDecorationPositioner->getWindowDecorationExtents(WINDOW, true) : SBoxExtents{};
+
     const auto          targetOverview = scrollOverviewAt(g_pInputManager->getMouseCoordsInternal());
     auto*               dropOverview   = targetOverview ? dynamic_cast<CScrollOverview*>(targetOverview.get()) : nullptr;
 
@@ -3582,9 +3592,8 @@ void CScrollOverview::endWindowDrag() {
         if (TARGET) {
             const auto GLOBALSIZE = DRAGBOX.size() * (1.F / (std::max(dropOverview->scale->value(), 0.01F) * std::max(DROPMONITOR ? DROPMONITOR->m_scale : 1.F, 0.01F)));
             auto       GLOBALBOX  = dropWorkspaceFullyVisible ? CBox{dropOverview->overviewPointToGlobal(dropWorkspaceIdx, DRAGBOX.pos()), GLOBALSIZE} :
-                                                                centerBoxInWorkspace(CBox{Vector2D{}, GLOBALSIZE}, DROPWORKSPACE, DROPMONITOR);
-            if (dropWorkspaceFullyVisible)
-                GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, DROPWORKSPACE, DROPMONITOR, WINDOW->presentation().borderSize());
+                                                                centerBoxInWorkspace(CBox{Vector2D{}, GLOBALSIZE}, DROPWORKSPACE, DROPMONITOR, DECORATIONEXTENTS);
+            GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, DROPWORKSPACE, DROPMONITOR, WINDOW->presentation().borderSize(), DECORATIONEXTENTS);
 
             TARGET->setPositionGlobal(GLOBALBOX);
             TARGET->warpPositionSize();
@@ -3601,7 +3610,7 @@ void CScrollOverview::endWindowDrag() {
         auto       GLOBALBOX  = CBox{GLOBALPOS, GLOBALSIZE};
         const auto WORKSPACE  = workspaceIdx < images.size() && images[workspaceIdx] ? images[workspaceIdx]->pWorkspace : WINDOW->m_workspace;
 
-        GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, WORKSPACE, MONITOR, WINDOW->presentation().borderSize());
+        GLOBALBOX = clampBoxToWorkspace(GLOBALBOX, WORKSPACE, MONITOR, WINDOW->presentation().borderSize(), DECORATIONEXTENTS);
 
         TARGET->damageEntire();
         TARGET->setPositionGlobal(GLOBALBOX);
@@ -4501,7 +4510,7 @@ void CScrollOverview::renderWorkspaceLive(PHLMONITOR monitor, size_t workspaceId
         if (dragActiveWindow && window == getOverviewWindowToShow(dragActiveWindow.lock()))
             return;
 
-        const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEOFFSET, layout);
+        const auto windowBox = getOverviewWindowBox(window, monitor, renderScale, viewOffset->value(), WORKSPACEOFFSET, layout, true, false);
         if (!overviewBoxIntersectsMonitor(windowBox, monitor))
             return;
 
