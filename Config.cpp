@@ -195,6 +195,10 @@ std::optional<std::string> configureMonitor(lua_State* L, const std::string& out
 
             const auto path = prefix.empty() ? key : prefix + ":" + key;
             const auto name = "plugin:scrolloverview:" + path;
+            if (name == "plugin:scrolloverview:submap_name") {
+                lua_pop(L, 2);
+                return "'" + path + "' is global and cannot be set per monitor";
+            }
             if (const auto definition = g_configDefinitions.find(name); definition != g_configDefinitions.end()) {
                 auto value = ::Config::Lua::fromGenericValue(definition->second);
                 if (!value) {
@@ -408,6 +412,7 @@ static void defineConfigValues() {
     addValue(makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
     addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:submap_name", "submap activated while the overview is open", Hyprlang::STRING{"scrolloverview"}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:input:touchpad_scroll_factor", "overview touchpad scroll factor", 1.F,
                                      SFloatValueOptions{.min = 0.F}));
@@ -461,6 +466,10 @@ ELayout getLayout(PHLMONITOR monitor) {
         return ELayout::AUTO;
 
     return LAYOUT == "horizontal" ? ELayout::HORIZONTAL : ELayout::VERTICAL;
+}
+
+std::string getSubmapName() {
+    return getValue<std::string>("plugin:scrolloverview:submap_name");
 }
 
 bool getCrossMonitorDrag(PHLMONITOR monitor) {

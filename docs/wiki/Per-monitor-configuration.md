@@ -39,8 +39,9 @@ end)
   `hyprctl monitors`, such as `DP-1` or `HDMI-A-2`. It does not accept `all`,
   wildcards, or monitor-description selectors. A monitor may be disconnected when
   its settings are configured; its overrides apply when it is connected.
-- Every overview property can be overridden, including individual `input` and
-  `shadow` fields. Hyprland options outside ScrollOverview remain global.
+- Every overview property except `submap_name` can be overridden, including
+  individual `input` and `shadow` fields. Hyprland options outside ScrollOverview
+  remain global.
 - Missing fields inherit the current global value.
 - Repeated calls for the same output merge fields - the last supplied value for a
   field wins. An empty subtable leaves previous overrides unchanged.
