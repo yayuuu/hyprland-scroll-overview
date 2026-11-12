@@ -15,7 +15,6 @@
 namespace ScrollOverview::Config {
 
 using TDispatcher       = SDispatchResult (*)(std::string);
-using TGestureKeyword   = Hyprlang::CParseResult (*)(const char* LHS, const char* RHS);
 using TGestureRegistrar   = SDispatchResult (*)(size_t fingerCount, const std::string& direction, const std::string& action, const std::string& mods, float deltaScale,
                                                 bool disableInhibit);
 
@@ -31,7 +30,7 @@ enum class EScrollAction {
 };
 
 void registerDispatcher(const std::string& name, TDispatcher dispatcher);
-void registerGesture(TGestureRegistrar gestureRegistrar, TGestureKeyword gestureKeyword);
+void registerGesture(TGestureRegistrar gestureRegistrar);
 void registerConfig();
 const void* monitorValueData(const std::string& name, PHLMONITOR monitor);
 bool hasCrossMonitorDragEnabled();

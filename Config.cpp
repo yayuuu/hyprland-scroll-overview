@@ -379,9 +379,7 @@ void registerDispatcher(const std::string& name, TDispatcher dispatcher) {
     HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", std::string{DISPATCHER->name}, DISPATCHER->luaFunction);
 }
 
-void registerGesture(TGestureRegistrar gestureRegistrar, TGestureKeyword gestureKeyword) {
-    HyprlandAPI::addConfigKeyword(SCROLLOVERVIEW_HANDLE, "scrolloverview-gesture", gestureKeyword, {});
-
+void registerGesture(TGestureRegistrar gestureRegistrar) {
     if (::Config::mgr()->type() != ::Config::CONFIG_LUA)
         return;
 
