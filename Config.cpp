@@ -379,9 +379,7 @@ void registerDispatcher(const std::string& name, TDispatcher dispatcher) {
     HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", std::string{DISPATCHER->name}, DISPATCHER->luaFunction);
 }
 
-void registerGesture(TGestureRegistrar gestureRegistrar, TGestureKeyword gestureKeyword) {
-    HyprlandAPI::addConfigKeyword(SCROLLOVERVIEW_HANDLE, "scrolloverview-gesture", gestureKeyword, {});
-
+void registerGesture(TGestureRegistrar gestureRegistrar) {
     if (::Config::mgr()->type() != ::Config::CONFIG_LUA)
         return;
 
@@ -406,7 +404,7 @@ static void defineConfigValues() {
     addValue(makeShared<CIntValue>("plugin:scrolloverview:gesture_distance", "gesture distance in pixels", 200, SIntValueOptions{.min = 1}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
-    addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", Hyprlang::STRING{"vertical"}));
+    addValue(makeShared<CStringValue>("plugin:scrolloverview:layout", "overview layout", ::Config::STRING{"vertical"}));
     addValue(makeShared<CBoolValue>("plugin:scrolloverview:cross_monitor_drag", "enable cross-monitor window dragging", false));
     addValue(makeShared<CIntValue>("plugin:scrolloverview:input:scroll_event_delay", "minimum delay (ms) between discrete scroll steps (wheel workspace nav and trackpad focus stepping)", 200, SIntValueOptions{.min = 0}));
     addValue(makeShared<CFloatValue>("plugin:scrolloverview:input:touchpad_scroll_factor", "overview touchpad scroll factor", 1.F,

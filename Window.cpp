@@ -611,7 +611,7 @@ static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& wind
     const auto PSHADOWS      = ScrollOverview::Config::getValue<int>("decoration:shadow:enabled");
     const auto PSHADOWSIZE   = ScrollOverview::Config::getValue<int>("decoration:shadow:range");
     const auto PSHADOWSCALE  = ScrollOverview::Config::getValue<float>("decoration:shadow:scale");
-    const auto PSHADOWOFFSET = ScrollOverview::Config::getValue<Hyprlang::VEC2>("decoration:shadow:offset");
+    const auto PSHADOWOFFSET = ScrollOverview::Config::getValue<::Config::VEC2>("decoration:shadow:offset");
 
     if (PSHADOWS != 1 || PSHADOWSIZE <= 0)
         return;
