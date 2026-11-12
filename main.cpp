@@ -47,7 +47,7 @@ typedef void (*origScheduleFrame)(void*, Aquamarine::IOutput::scheduleFrameReaso
 typedef void (*origSendFrameEventsToWorkspace)(void*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&);
 typedef void (*origSurfaceFrame)(void*, const Time::steady_tp&);
 typedef void (*origMoveMouse)(void*, const Vector2D&);
-using origChangeWorkspace = Config::Actions::ActionResult (*)(PHLWORKSPACE);
+using origChangeWorkspace = Config::Actions::ActionResult (*)(PHLWORKSPACE, bool);
 
 static bool g_unloading = false;
 
@@ -71,14 +71,14 @@ static void warnNativeDragUnavailable();
 static void disableNativeDragHook();
 static void reconcileNativeDragHook();
 
-static Config::Actions::ActionResult hkChangeWorkspace(PHLWORKSPACE workspace) {
+static Config::Actions::ActionResult hkChangeWorkspace(PHLWORKSPACE workspace, bool noFocus) {
     if (workspace && !g_unloading) {
         const auto overviews = scrollOverviews();
         for (const auto& overview : overviews)
             removeOverview(overview.get());
     }
 
-    return rc<origChangeWorkspace>(g_pScrollChangeWorkspaceHook->m_original)(workspace);
+    return rc<origChangeWorkspace>(g_pScrollChangeWorkspaceHook->m_original)(workspace, noFocus);
 }
 
 bool ensureScrollOverviewHooks() {
@@ -616,7 +616,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // rendering hooks inside hkChangeWorkspace, which still needs its original function.
     g_pScrollChangeWorkspaceHook = HyprlandAPI::createFunctionHook(
         SCROLLOVERVIEW_HANDLE,
-        findFnOrThrow("changeWorkspace", {"Config::Actions::changeWorkspace(Hyprutils::Memory::CSharedPointer<Workspace::CHLWorkspace>)"}),
+        findFnOrThrow("changeWorkspace", {"Config::Actions::changeWorkspace(Hyprutils::Memory::CSharedPointer<Workspace::CHLWorkspace>, bool)"}),
         rc<void*>(hkChangeWorkspace));
     if (!g_pScrollChangeWorkspaceHook || !g_pScrollChangeWorkspaceHook->hook()) {
         failNotif("Failed enabling workspace change hook");
