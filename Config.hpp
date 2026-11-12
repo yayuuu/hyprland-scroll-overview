@@ -4,6 +4,7 @@
 
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprland/src/config/shared/Types.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 
 #include <optional>
@@ -56,9 +57,9 @@ T getValue(const std::string& name, PHLMONITOR monitor = {}) {
         else if constexpr (std::is_same_v<TValue, bool>)
             return *static_cast<const bool*>(DATA);
         else if constexpr (std::is_integral_v<TValue>)
-            return static_cast<TValue>(*static_cast<const Hyprlang::INT*>(DATA));
+            return static_cast<TValue>(*static_cast<const ::Config::INTEGER*>(DATA));
         else if constexpr (std::is_floating_point_v<TValue>)
-            return static_cast<TValue>(*static_cast<const Hyprlang::FLOAT*>(DATA));
+            return static_cast<TValue>(*static_cast<const ::Config::FLOAT*>(DATA));
         else
             return *static_cast<const TValue*>(DATA);
     }
@@ -69,11 +70,11 @@ T getValue(const std::string& name, PHLMONITOR monitor = {}) {
             return {};
         return *sc<::Config::CGradientValueData*>(ref.ptr());
     } else if constexpr (std::is_same_v<TValue, bool>)
-        return *valueRef<Hyprlang::INT>(name) != 0;
+        return *valueRef<::Config::INTEGER>(name) != 0;
     else if constexpr (std::is_integral_v<TValue> && !std::is_same_v<TValue, bool>)
-        return sc<TValue>(*valueRef<Hyprlang::INT>(name));
+        return sc<TValue>(*valueRef<::Config::INTEGER>(name));
     else if constexpr (std::is_floating_point_v<TValue>)
-        return sc<TValue>(*valueRef<Hyprlang::FLOAT>(name));
+        return sc<TValue>(*valueRef<::Config::FLOAT>(name));
     else
         return *valueRef<TValue>(name);
 }
@@ -88,11 +89,11 @@ void setValue(const std::string& name, const T& value) {
     using TValue = std::decay_t<T>;
 
     if constexpr (std::is_same_v<TValue, bool>)
-        *getValuePtr<Hyprlang::INT>(name) = value ? 1 : 0;
+        *getValuePtr<::Config::INTEGER>(name) = value ? 1 : 0;
     else if constexpr (std::is_integral_v<TValue> && !std::is_same_v<TValue, bool>)
-        *getValuePtr<Hyprlang::INT>(name) = sc<Hyprlang::INT>(value);
+        *getValuePtr<::Config::INTEGER>(name) = sc<::Config::INTEGER>(value);
     else if constexpr (std::is_floating_point_v<TValue>)
-        *getValuePtr<Hyprlang::FLOAT>(name) = sc<Hyprlang::FLOAT>(value);
+        *getValuePtr<::Config::FLOAT>(name) = sc<::Config::FLOAT>(value);
     else
         *getValuePtr<TValue>(name) = value;
 }
