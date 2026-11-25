@@ -102,7 +102,7 @@ void drawDecoration(Render::CRenderContext& ctx, const CBox& box, Data data, Pai
     }
     decorationTransform = nullptr;
     auto restore = Hyprutils::Utils::CScopeGuard([&] { decorationTransform = transform; });
-    data.round = sc<int>(std::round(data.round * transform->scale));
+    data.round = data.round * transform->scale;
     if constexpr (requires { data.blurPatternBox; }) {
         if (data.blurPatternBox)
             data.blurPatternBox = transform->box(*data.blurPatternBox);
@@ -342,7 +342,7 @@ static void roundStandaloneWindowPassElements(const PHLWINDOW& window, PHLMONITO
     if (Fullscreen::controller()->isFullscreen(window))
         return;
 
-    const int   rounding      = sc<int>(std::round(window->presentation().rounding() * monitor->m_scale * renderScale));
+    const int   rounding      = sc<int>(std::round(window->presentation().rounding().max() * monitor->m_scale * renderScale));
     const float roundingPower = window->presentation().roundingPower();
 
     if (rounding <= 0)
@@ -504,7 +504,7 @@ static SOverviewWindowMetrics getOverviewWindowMetrics(PHLMONITOR monitor, const
     metrics.borderSize              = window->presentation().borderSize();
     metrics.borderPx                = sc<int>(std::round(metrics.borderSize * monitor->m_scale));
     metrics.borderPxScaled          = metrics.borderSize * metrics.pxScale;
-    metrics.roundingBase            = window->presentation().rounding();
+    metrics.roundingBase            = window->presentation().rounding().max();
     metrics.roundingPower           = window->presentation().roundingPower();
     metrics.correctionOffset        = metrics.borderSize * (M_SQRT2 - 1) * std::max(2.0 - metrics.roundingPower, 0.0);
     metrics.outerRound              = metrics.roundingBase > 0 ? (metrics.roundingBase + metrics.borderSize) - metrics.correctionOffset : 0.F;
@@ -582,7 +582,7 @@ static void renderOverviewWindowShadow(PHLMONITOR monitor, const PHLWINDOW& wind
     const auto PSHADOWS      = ScrollOverview::Config::getValue<int>("decoration:shadow:enabled");
     const auto PSHADOWSIZE   = ScrollOverview::Config::getValue<int>("decoration:shadow:range");
     const auto PSHADOWSCALE  = ScrollOverview::Config::getValue<float>("decoration:shadow:scale");
-    const auto PSHADOWOFFSET = ScrollOverview::Config::getValue<Hyprlang::VEC2>("decoration:shadow:offset");
+    const auto PSHADOWOFFSET = ScrollOverview::Config::getValue<::Config::VEC2>("decoration:shadow:offset");
 
     if (PSHADOWS != 1 || PSHADOWSIZE <= 0)
         return;

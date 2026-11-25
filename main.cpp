@@ -544,8 +544,8 @@ static std::expected<void, std::string> applyOverviewGesture(size_t fingerCount,
     return std::unexpected(std::format("Invalid gesture: {}", action));
 }
 
-// Lua-facing registrar (scrolloverview.gesture). takes the direction/mods as strings and resolves
-// them the same way the keyword does, then defers to applyOverviewGesture.
+// Lua-facing registrar (scrolloverview.gesture). Takes the direction/mods as strings and defers
+// to applyOverviewGesture.
 static SDispatchResult onRegisterOverviewGesture(size_t fingerCount, const std::string& directionStr, const std::string& action, const std::string& mods, float deltaScale,
                                                  bool disableInhibit) {
     if (g_unloading)
@@ -564,67 +564,6 @@ static SDispatchResult onRegisterOverviewGesture(size_t fingerCount, const std::
         return {.success = false, .error = res.error()};
 
     return {};
-}
-
-static Hyprlang::CParseResult overviewGestureKeyword(const char* LHS, const char* RHS) {
-    Hyprlang::CParseResult result;
-
-    if (g_unloading)
-        return result;
-
-    CConstVarList             data(RHS);
-
-    size_t                    fingerCount = 0;
-
-    try {
-        fingerCount = std::stoul(std::string{data[0]});
-    } catch (...) {
-        result.setError(std::format("Invalid value {} for finger count", data[0]).c_str());
-        return result;
-    }
-
-    const auto direction = g_pTrackpadGestures->dirForString(data[1]);
-
-    if (direction == TRACKPAD_GESTURE_DIR_NONE) {
-        result.setError(std::format("Invalid direction: {}", data[1]).c_str());
-        return result;
-    }
-
-    int      startDataIdx   = 2;
-    Input::ModifierMask modMask        = Input::HL_MODIFIER_NONE;
-    float    deltaScale     = 1.F;
-    bool     disableInhibit = false;
-
-    while (true) {
-
-        if (data[startDataIdx].starts_with("mod:")) {
-            modMask = Keybinds::modMaskFromString(std::string{data[startDataIdx].substr(4)});
-            startDataIdx++;
-            continue;
-        } else if (data[startDataIdx].starts_with("scale:")) {
-            try {
-                deltaScale = std::clamp(std::stof(std::string{data[startDataIdx].substr(6)}), 0.1F, 10.F);
-                startDataIdx++;
-                continue;
-            } catch (...) {
-                result.setError(std::format("Invalid delta scale: {}", std::string{data[startDataIdx].substr(6)}).c_str());
-                return result;
-            }
-        } else if (data[startDataIdx] == "disable_inhibit") {
-            disableInhibit = true;
-            startDataIdx++;
-            continue;
-        }
-
-        break;
-    }
-
-    const auto resultFromGesture = applyOverviewGesture(fingerCount, direction, std::string{data[startDataIdx]}, modMask, deltaScale, disableInhibit);
-
-    if (!resultFromGesture)
-        result.setError(resultFromGesture.error().c_str());
-
-    return result;
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
@@ -709,7 +648,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ScrollOverview::Config::registerDispatcher("overview", ::onOverviewDispatcher);
     ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
     ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
-    ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture, ::overviewGestureKeyword);
+    ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture);
     ScrollOverview::Config::registerConfig();
 
     return {"scrolloverview", "A plugin for an overview", "Vaxry, yayuuu", SCROLLOVERVIEW_VERSION};
